@@ -3,9 +3,11 @@ package memory
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"sync"
+	"sync/atomic"
 )
 
 var (
@@ -23,24 +25,42 @@ type offHeap interface{ offHeap() }
 var (
 	offHeapType = reflect.TypeFor[offHeap]()
 	pkgPath     = reflect.TypeFor[Stats]().PkgPath()
-	verdicts    sync.Map
+	verdictsMu  sync.Mutex
+	verdicts    atomic.Pointer[map[uintptr]error]
 )
 
 func checkType(t reflect.Type) error {
-	if v, ok := verdicts.Load(t); ok {
-		err, _ := v.(error)
-		return err
+	key := reflect.ValueOf(t).Pointer()
+	if m := verdicts.Load(); m != nil {
+		if err, ok := (*m)[key]; ok {
+			return err
+		}
 	}
-	var err error
+	verdictsMu.Lock()
+	defer verdictsMu.Unlock()
+	old := map[uintptr]error{}
+	if m := verdicts.Load(); m != nil {
+		if err, ok := (*m)[key]; ok {
+			return err
+		}
+		old = *m
+	}
+	next := make(map[uintptr]error, len(old)+1)
+	maps.Copy(next, old)
+	next[key] = verdict(t)
+	verdicts.Store(&next)
+	return next[key]
+}
+
+func verdict(t reflect.Type) error {
 	switch path, bad := findPointer(t, ""); {
 	case bad == nil:
+		return nil
 	case path == "":
-		err = fmt.Errorf("memory: %s: %w", t, ErrHoldsPointers)
+		return fmt.Errorf("memory: %s: %w", t, ErrHoldsPointers)
 	default:
-		err = fmt.Errorf("memory: %s: %s is %s: %w", t, path, bad, ErrHoldsPointers)
+		return fmt.Errorf("memory: %s: %s is %s: %w", t, path, bad, ErrHoldsPointers)
 	}
-	verdicts.Store(t, err)
-	return err
 }
 
 func findPointer(t reflect.Type, path string) (string, reflect.Type) {
