@@ -18,4 +18,4 @@ func (guard) enter()                                   {}
 func (guard) exit()                                    {}
 func (guard) reset()                                   {}
 func (guard) stamp(base unsafe.Pointer) unsafe.Pointer { return base }
-func (guard) verify(p unsafe.Pointer) unsafe.Pointer   { return p }
+func (guard) verify(unsafe.Pointer)                    {}

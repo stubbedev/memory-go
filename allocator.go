@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"unsafe"
@@ -12,8 +14,8 @@ import (
 // takes. It is implemented by *Local and *Shared only.
 type Allocator interface {
 	calloc(size int) (unsafe.Pointer, error)
-	realloc(p unsafe.Pointer, size int) (unsafe.Pointer, error)
-	free(p unsafe.Pointer) error
+	realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error)
+	free(p unsafe.Pointer, size int) error
 }
 
 // Stats describes the allocations an allocator currently holds.
@@ -37,20 +39,8 @@ type Local struct {
 	_     noCopy
 	g     guard
 	a     modernc.Allocator
+	d     direct
 	stats Stats
-}
-
-func (l *Local) admit(base unsafe.Pointer) unsafe.Pointer {
-	l.stats.Live++
-	l.stats.Bytes += modernc.UnsafeUsableSize(base) - headerSize
-	return l.g.stamp(base)
-}
-
-func (l *Local) retire(p unsafe.Pointer) unsafe.Pointer {
-	base := l.g.verify(p)
-	l.stats.Live--
-	l.stats.Bytes -= modernc.UnsafeUsableSize(base) - headerSize
-	return base
 }
 
 func withHeader(size int) (int, error) {
@@ -60,6 +50,50 @@ func withHeader(size int) (int, error) {
 	return size + headerSize, nil
 }
 
+func baseOf(p unsafe.Pointer) unsafe.Pointer { return unsafe.Add(p, -headerSize) }
+
+func (l *Local) acquire(total int) (unsafe.Pointer, int, error) {
+	if isDirect(total) {
+		return l.d.alloc(total)
+	}
+	base, err := l.a.UnsafeCalloc(total)
+	if err != nil {
+		return nil, 0, err
+	}
+	return base, modernc.UnsafeUsableSize(base), nil
+}
+
+func (l *Local) release(base unsafe.Pointer, total int) error {
+	if isDirect(total) {
+		return l.d.free(base)
+	}
+	return l.a.UnsafeFree(base)
+}
+
+func (l *Local) admit(base unsafe.Pointer, reserved int) unsafe.Pointer {
+	l.stats.Live++
+	l.stats.Bytes += reserved - headerSize
+	return l.g.stamp(base)
+}
+
+func (l *Local) retire(p unsafe.Pointer, total int) (unsafe.Pointer, int) {
+	base := baseOf(p)
+	var reserved int
+	if isDirect(total) {
+		var ok bool
+		if reserved, ok = l.d.reserved(base); !ok {
+			panic(fmt.Sprintf("memory: %#x is not a live allocation of this allocator: already freed, from another allocator, or never allocated", uintptr(p)))
+		}
+		l.g.verify(p)
+	} else {
+		l.g.verify(p)
+		reserved = modernc.UnsafeUsableSize(base)
+	}
+	l.stats.Live--
+	l.stats.Bytes -= reserved - headerSize
+	return base, reserved
+}
+
 func (l *Local) calloc(size int) (unsafe.Pointer, error) {
 	l.g.enter()
 	defer l.g.exit()
@@ -67,33 +101,58 @@ func (l *Local) calloc(size int) (unsafe.Pointer, error) {
 	if err != nil {
 		return nil, err
 	}
-	base, err := l.a.UnsafeCalloc(total)
+	base, reserved, err := l.acquire(total)
 	if err != nil {
 		return nil, err
 	}
-	return l.admit(base), nil
+	return l.admit(base, reserved), nil
 }
 
-func (l *Local) realloc(p unsafe.Pointer, size int) (unsafe.Pointer, error) {
+func (l *Local) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
 	l.g.enter()
 	defer l.g.exit()
+	oldTotal, err := withHeader(oldSize)
+	if err != nil {
+		return nil, err
+	}
 	total, err := withHeader(size)
 	if err != nil {
 		return nil, err
 	}
-	base := l.retire(p)
-	moved, err := l.a.UnsafeRealloc(base, total)
+	base, reserved := l.retire(p, oldTotal)
+	if !isDirect(oldTotal) && !isDirect(total) {
+		moved, err := l.a.UnsafeRealloc(base, total)
+		if err != nil {
+			l.admit(base, reserved)
+			return nil, err
+		}
+		return l.admit(moved, modernc.UnsafeUsableSize(moved)), nil
+	}
+	if isDirect(oldTotal) && isDirect(total) {
+		if rounded, err := pageRound(total); err == nil && rounded == reserved {
+			return l.admit(base, reserved), nil
+		}
+	}
+	moved, movedReserved, err := l.acquire(total)
 	if err != nil {
-		l.admit(base)
+		l.admit(base, reserved)
 		return nil, err
 	}
-	return l.admit(moved), nil
+	n := min(oldSize, size)
+	copy(unsafe.Slice((*byte)(unsafe.Add(moved, headerSize)), n), unsafe.Slice((*byte)(p), n))
+	q := l.admit(moved, movedReserved)
+	return q, l.release(base, oldTotal)
 }
 
-func (l *Local) free(p unsafe.Pointer) error {
+func (l *Local) free(p unsafe.Pointer, size int) error {
 	l.g.enter()
 	defer l.g.exit()
-	return l.a.UnsafeFree(l.retire(p))
+	total, err := withHeader(size)
+	if err != nil {
+		return err
+	}
+	base, _ := l.retire(p, total)
+	return l.release(base, total)
 }
 
 // Stats reports the allocations l currently holds.
@@ -107,7 +166,7 @@ func (l *Local) Stats() Stats {
 func (l *Local) Trim() error {
 	l.g.enter()
 	defer l.g.exit()
-	return l.a.Trim()
+	return errors.Join(l.d.trim(), l.a.Trim())
 }
 
 // Close unmaps every page of l, invalidating everything allocated from it, and
@@ -117,7 +176,7 @@ func (l *Local) Close() error {
 	defer l.g.exit()
 	l.g.reset()
 	l.stats = Stats{}
-	return l.a.Close()
+	return errors.Join(l.d.close(), l.a.Close())
 }
 
 // Shared is an Allocator safe for concurrent use: a mutex serialises every
@@ -134,16 +193,16 @@ func (s *Shared) calloc(size int) (unsafe.Pointer, error) {
 	return s.l.calloc(size)
 }
 
-func (s *Shared) realloc(p unsafe.Pointer, size int) (unsafe.Pointer, error) {
+func (s *Shared) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.l.realloc(p, size)
+	return s.l.realloc(p, oldSize, size)
 }
 
-func (s *Shared) free(p unsafe.Pointer) error {
+func (s *Shared) free(p unsafe.Pointer, size int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.l.free(p)
+	return s.l.free(p, size)
 }
 
 // Stats reports the allocations s currently holds.

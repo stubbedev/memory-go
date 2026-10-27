@@ -1,7 +1,8 @@
 // Package memory allocates typed values outside the Go heap without cgo.
 //
-// Memory comes from modernc.org/memory, a pure Go allocator that maps pages
-// from the operating system directly. The garbage collector neither scans nor
+// Small allocations come from modernc.org/memory, a pure Go allocator that
+// maps pages from the operating system directly; large ones get their own
+// mapping, rounded up to whole operating system pages. The garbage collector neither scans nor
 // frees it, so every value placed there must be free of Go pointers: no
 // pointers, slices, strings, maps, channels, functions or interfaces. Every
 // allocation checks this and returns ErrHoldsPointers otherwise. The handle

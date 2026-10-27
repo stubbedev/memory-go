@@ -3,9 +3,10 @@
 Typed manual memory management for Go without cgo: values and containers that
 live outside the Go heap, so the garbage collector never scans or frees them.
 
-Memory comes from [modernc.org/memory](https://pkg.go.dev/modernc.org/memory),
+Small allocations come from [modernc.org/memory](https://pkg.go.dev/modernc.org/memory),
 a pure Go allocator that maps pages from the OS (`mmap`, `VirtualAlloc`)
-directly. `CGO_ENABLED=0` builds work. The API follows
+directly; large ones are mapped from the OS by memory-go itself (see
+[Reservation](#reservation)). `CGO_ENABLED=0` builds work. The API follows
 [mm-go](https://github.com/joetifa2003/mm-go), which does the same on top of C
 `calloc` through cgo, but misuse panics instead of corrupting memory.
 
@@ -88,6 +89,21 @@ there:
 slices and strings for access. Those stay valid until the handle is freed or
 resized and must not outlive it.
 
+## Reservation
+
+An allocation of up to 8 KiB with its header (or one OS page, if larger) takes
+a slot of the next power of two in modernc's size classes. Anything larger
+gets its own mapping rounded up to whole OS pages, so it reserves less than
+one page beyond its size and header: a 1024×1024 RGBA buffer (4 MiB) reserves
+4 MiB plus one page, not the 8 MiB a power-of-two class would. `Stats.Bytes`
+reports these reservations.
+
+Freed large mappings are kept for reuse by an allocation of the same page
+count, up to the allocator's peak of live large bytes plus 4 MiB; beyond that
+the oldest are unmapped. The newest 4 MiB of each size (at least one mapping)
+stay committed; older ones are decommitted except for their first page, which
+keeps the freed header readable. `Trim` unmaps every kept mapping.
+
 ## Panics instead of corruption
 
 Every allocation carries a 16-byte header recording its allocator and whether
@@ -102,8 +118,12 @@ it is live. These panic at the point of the mistake:
 
 Not caught: a stale handle whose memory was freed and has since been handed
 out again, `Ref`s, and Go pointers or slices obtained from a handle and kept
-after it was freed. After `Close`, touching old handles faults instead of
-panicking, since their pages are unmapped.
+after it was freed. After `Close` or `Trim`, or once a freed large mapping is
+unmapped to stay within the retention budget, reading through an old handle
+faults instead of panicking, since its pages are unmapped. Freeing or
+resizing a large allocation is checked against the allocator's own table of
+live mappings, so a stale or foreign large handle panics even then, and in
+`memory_unchecked` builds too.
 
 Allocation failures (out of memory, negative or overflowing sizes, pointer
 types) come back as errors.

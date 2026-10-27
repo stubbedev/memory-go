@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 var (
@@ -102,5 +103,10 @@ func byteSize[T any](n int) (int, error) {
 	if size != 0 && n > math.MaxInt/size {
 		return 0, fmt.Errorf("memory: %d×%s: %w", n, t, ErrTooLarge)
 	}
-	return max(n*size, 1), nil
+	return sizeOf[T](n), nil
+}
+
+func sizeOf[T any](n int) int {
+	var zero T
+	return max(n*int(unsafe.Sizeof(zero)), 1)
 }

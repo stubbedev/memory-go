@@ -45,7 +45,7 @@ linters:
           - gosec
           - unparam
       # These files are the audited boundary between typed values and raw memory.
-      - path: ^(allocator|guard|guard_unchecked|memory|string)\.go$
+      - path: ^(allocator|direct|direct_unix|direct_windows|guard|guard_unchecked|layout|memory|string)\.go$
         linters:
           - gosec
         text: G103

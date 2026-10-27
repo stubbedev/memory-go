@@ -88,7 +88,7 @@ func Free[T any](a Allocator, p Ptr[T]) error {
 	if p.IsNil() {
 		return nil
 	}
-	if err := a.free(unsafe.Pointer(p.p)); err != nil {
+	if err := a.free(unsafe.Pointer(p.p), sizeOf[T](1)); err != nil {
 		return fmt.Errorf("memory: free %s: %w", reflect.TypeFor[T](), err)
 	}
 	return nil
@@ -108,7 +108,9 @@ func MakeSlice[T any](a Allocator, n int) (Slice[T], error) {
 }
 
 // ResizeSlice changes the length of s to n, keeping the common prefix and
-// zeroing any new elements. On error s is left intact. n == 0 frees s. s must
+// zeroing any new elements. On error s is left intact, unless only returning
+// the old memory to the operating system failed: then the resized Slice comes
+// back along with the error, and s is freed. n == 0 frees s. s must
 // come from the same allocator and be live, or ResizeSlice panics.
 func ResizeSlice[T any](a Allocator, s Slice[T], n int) (Slice[T], error) {
 	if s.n == 0 {
@@ -121,15 +123,18 @@ func ResizeSlice[T any](a Allocator, s Slice[T], n int) (Slice[T], error) {
 	if n == 0 {
 		return Slice[T]{}, FreeSlice(a, s)
 	}
-	p, err := a.realloc(unsafe.Pointer(s.p), size)
+	p, err := a.realloc(unsafe.Pointer(s.p), sizeOf[T](s.n), size)
 	if err != nil {
-		return s, fmt.Errorf("memory: resize %d×%s to %d: %w", s.n, reflect.TypeFor[T](), n, err)
+		err = fmt.Errorf("memory: resize %d×%s to %d: %w", s.n, reflect.TypeFor[T](), n, err)
+	}
+	if p == nil {
+		return s, err
 	}
 	r := Slice[T]{p: (*T)(p), n: n}
 	if n > s.n {
 		clear(r.Elems()[s.n:])
 	}
-	return r, nil
+	return r, err
 }
 
 // FreeSlice releases s. Freeing the empty Slice does nothing. Freeing s twice,
@@ -138,7 +143,7 @@ func FreeSlice[T any](a Allocator, s Slice[T]) error {
 	if s.n == 0 {
 		return nil
 	}
-	if err := a.free(unsafe.Pointer(s.p)); err != nil {
+	if err := a.free(unsafe.Pointer(s.p), sizeOf[T](s.n)); err != nil {
 		return fmt.Errorf("memory: free %d×%s: %w", s.n, reflect.TypeFor[T](), err)
 	}
 	return nil

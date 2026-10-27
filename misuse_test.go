@@ -105,3 +105,18 @@ func TestResizeInvalidatesOldHandle(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestForeignAllocatorPanicsOnLargeAllocation(t *testing.T) {
+	t.Parallel()
+
+	a, b := memtest.Local(t), memtest.Local(t)
+	s, err := memory.MakeSlice[byte](a, 4<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustPanic(t, "not a live allocation of this allocator", func() { _ = memory.FreeSlice(b, s) })
+	mustPanic(t, "not a live allocation of this allocator", func() { _, _ = memory.ResizeSlice(b, s, 1) })
+	if err := memory.FreeSlice(a, s); err != nil {
+		t.Fatal(err)
+	}
+}

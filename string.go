@@ -11,19 +11,19 @@ func NewString(a Allocator, s string) (String, error) {
 	return AppendString(a, String{}, s)
 }
 
-// AppendString appends more to s, returning the grown String. On error s is
-// left intact.
+// AppendString appends more to s, returning the grown String. Errors follow
+// ResizeSlice.
 func AppendString(a Allocator, s String, more string) (String, error) {
 	if more == "" {
 		return s, nil
 	}
 	n := s.b.Len()
 	b, err := ResizeSlice(a, s.b, n+len(more))
-	if err != nil {
+	if b == s.b {
 		return s, err
 	}
 	copy(b.Elems()[n:], more)
-	return String{b: b}, nil
+	return String{b: b}, err
 }
 
 // FreeString releases s.

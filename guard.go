@@ -56,7 +56,7 @@ func (g *guard) stamp(base unsafe.Pointer) unsafe.Pointer {
 	return unsafe.Add(base, headerSize)
 }
 
-func (g *guard) verify(p unsafe.Pointer) unsafe.Pointer {
+func (g *guard) verify(p unsafe.Pointer) {
 	h := headerOf(p)
 	switch {
 	case h.magic == freedMagic:
@@ -67,5 +67,4 @@ func (g *guard) verify(p unsafe.Pointer) unsafe.Pointer {
 		panic(fmt.Sprintf("memory: %#x belongs to a different allocator", uintptr(p)))
 	}
 	h.magic = freedMagic
-	return unsafe.Pointer(h)
 }
