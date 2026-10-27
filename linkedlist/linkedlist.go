@@ -33,6 +33,7 @@ type List[T any] struct {
 	head, tail link
 	spare      link
 	n          int
+	mods       uint
 }
 
 // New returns an empty List.
@@ -50,6 +51,7 @@ func (l *List[T]) Len() int { return l.n }
 func (l *List[T]) node(at link) *node[T] { return l.nodes.Ptr(at.index()) }
 
 func (l *List[T]) acquire(value T) (link, error) {
+	l.mods++
 	if l.spare != none {
 		at := l.spare
 		l.spare = l.node(at).next
@@ -112,6 +114,7 @@ func (l *List[T]) unlink(at link) T {
 	*nd = node[T]{next: l.spare}
 	l.spare = at
 	l.n--
+	l.mods++
 	return value
 }
 
@@ -207,19 +210,25 @@ func (l *List[T]) Clip() error {
 	}
 	old := l.nodes
 	l.nodes, l.spare = nodes, none
+	l.mods++
 	if l.n > 0 {
 		l.head, l.tail = linkTo(0), linkTo(l.n-1)
 	}
 	return old.Free()
 }
 
-// All yields each index and element in order.
+// All yields each index and element in order. Inserting or removing
+// elements, or Clip, during the loop panics; changing values is allowed.
 func (l *List[T]) All() iter.Seq2[int, T] {
 	return func(yield func(int, T) bool) {
+		mods := l.mods
 		i := 0
 		for at := l.head; at != none; at = l.node(at).next {
 			if !yield(i, l.node(at).value) {
 				return
+			}
+			if l.mods != mods {
+				panic("linkedlist: modified during All")
 			}
 			i++
 		}
@@ -229,5 +238,6 @@ func (l *List[T]) All() iter.Seq2[int, T] {
 // Free releases every node and leaves l empty.
 func (l *List[T]) Free() error {
 	l.head, l.tail, l.spare, l.n = none, none, none, 0
+	l.mods++
 	return l.nodes.Free()
 }

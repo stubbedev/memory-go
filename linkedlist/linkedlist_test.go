@@ -161,3 +161,46 @@ func TestIndexOutOfRangePanics(t *testing.T) {
 	}()
 	l.At(0)
 }
+
+func TestStructuralChangeDuringAllPanics(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	l, err := linkedlist.New[int](a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Free() })
+	for v := 1; v <= 4; v++ {
+		if err := l.PushBack(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.PopBack()
+	got := make([]int, 0, 3)
+	for _, v := range l.All() {
+		got = append(got, v)
+	}
+	if !slices.Equal(got, []int{1, 2, 3}) {
+		t.Fatalf("All = %v, want [1 2 3]", got)
+	}
+	for _, mutate := range []func(){
+		func() { l.PopFront() },
+		func() { l.PopBack() },
+		func() { _ = l.PushBack(9) },
+		func() { _ = l.PushFront(9) },
+		func() { l.RemoveAt(0) },
+	} {
+		func() {
+			defer func() {
+				msg, _ := recover().(string)
+				if msg != "linkedlist: modified during All" {
+					t.Fatalf("panic = %q, want the modified-during-All panic", msg)
+				}
+			}()
+			for range l.All() {
+				mutate()
+			}
+		}()
+	}
+}
