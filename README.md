@@ -163,6 +163,8 @@ to the OS, and `Close` releases everything at once.
 | `pool` | Free-list allocator for one type: `Get` and `Put` individual values without touching the allocator |
 
 Containers are not safe for concurrent use, even on a `Shared` allocator.
+Adding or removing entries of a `hashmap` or `linkedlist` while ranging over
+`All`, `Keys` or `Values` panics instead of reading freed or reused slots.
 
 ## Recipes
 

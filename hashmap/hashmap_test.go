@@ -165,3 +165,64 @@ func BenchmarkGoMapSetGet(b *testing.B) {
 		i++
 	}
 }
+
+func mustPanicModified(t *testing.T, f func()) {
+	t.Helper()
+	defer func() {
+		t.Helper()
+		msg, _ := recover().(string)
+		if msg != "hashmap: modified during All" {
+			t.Fatalf("panic = %q, want the modified-during-All panic", msg)
+		}
+	}()
+	f()
+}
+
+func TestStructuralChangeDuringAllPanics(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	fill := func() *hashmap.Map[int, int] {
+		m, err := hashmap.New[int, int](a, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = m.Free() })
+		for k := range 6 {
+			if err := m.Set(k, k); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return m
+	}
+	m := fill()
+	for k := range m.All() {
+		if err := m.Set(k, -k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for k, v := range m.All() {
+		if v != -k {
+			t.Fatalf("m[%d] = %d after updating during All, want %d", k, v, -k)
+		}
+	}
+	mustPanicModified(t, func() {
+		for k := range m.All() {
+			_ = m.Set(k+100, 0)
+		}
+	})
+	m = fill()
+	mustPanicModified(t, func() {
+		for k := range m.All() {
+			m.Delete(k)
+		}
+	})
+	m = fill()
+	mustPanicModified(t, func() {
+		for k := range m.Keys() {
+			for j := range 64 {
+				_ = m.Set(1000+k*64+j, 0)
+			}
+		}
+	})
+}

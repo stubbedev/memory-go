@@ -35,6 +35,7 @@ type Map[K comparable, V any] struct {
 	slots memory.Slice[slot[K, V]]
 	mask  uint64
 	n     int
+	mods  uint
 }
 
 // New returns an empty Map with room for capacity entries.
@@ -112,6 +113,7 @@ func (m *Map[K, V]) Set(key K, value V) error {
 	}
 	if !ok {
 		m.n++
+		m.mods++
 	}
 	m.slots.Elems()[i] = slot[K, V]{hash: h, key: key, value: value}
 	return nil
@@ -136,6 +138,7 @@ func (m *Map[K, V]) rehash(log int) error {
 	}
 	old := m.slots
 	m.slots, m.mask = slots, uint64(1)<<log-1
+	m.mods++
 	s := slots.Elems()
 	for _, e := range old.Elems() {
 		if e.hash == 0 {
@@ -165,15 +168,24 @@ func (m *Map[K, V]) Delete(key K) bool {
 	}
 	s[hole] = slot[K, V]{}
 	m.n--
+	m.mods++
 	return true
 }
 
-// All yields every key and value.
+// All yields every key and value. Updating the value of an existing key
+// during the loop is allowed; adding or deleting keys, or Clip, panics.
 func (m *Map[K, V]) All() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
+		mods := m.mods
 		for _, e := range m.slots.Elems() {
-			if e.hash != 0 && !yield(e.key, e.value) {
+			if e.hash == 0 {
+				continue
+			}
+			if !yield(e.key, e.value) {
 				return
+			}
+			if m.mods != mods {
+				panic("hashmap: modified during All")
 			}
 		}
 	}
@@ -205,5 +217,6 @@ func (m *Map[K, V]) Values() iter.Seq[V] {
 func (m *Map[K, V]) Free() error {
 	err := memory.FreeSlice(m.alloc, m.slots)
 	m.slots, m.mask, m.n = memory.Slice[slot[K, V]]{}, 0, 0
+	m.mods++
 	return err
 }
