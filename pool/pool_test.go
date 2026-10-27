@@ -122,3 +122,21 @@ func BenchmarkGoNew(b *testing.B) {
 		sink = new(particle)
 	}
 }
+
+func TestPutZeroItemPanics(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	p, err := pool.New[int](a, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Free() })
+	defer func() {
+		r := recover()
+		if msg, _ := r.(string); msg != "pool: Put of the zero Item" {
+			t.Fatalf("panic = %v, want the zero-Item panic", r)
+		}
+	}()
+	p.Put(pool.Item[int]{})
+}

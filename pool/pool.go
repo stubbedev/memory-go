@@ -90,6 +90,9 @@ func (p *Pool[T]) Get() (Item[T], error) {
 
 // Put returns it to p, invalidating it.
 func (p *Pool[T]) Put(it Item[T]) {
+	if it.r.IsNil() {
+		panic("pool: Put of the zero Item")
+	}
 	s := it.r.Value()
 	if memory.Checked {
 		if s.tag != p.id|live {
