@@ -1,3 +1,5 @@
+//go:build !memory_unchecked
+
 package memory_test
 
 import (

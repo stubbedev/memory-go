@@ -1,10 +1,8 @@
 package memory
 
 import (
-	"fmt"
 	"math"
 	"sync"
-	"sync/atomic"
 	"unsafe"
 
 	modernc "modernc.org/memory"
@@ -26,67 +24,30 @@ type Stats struct {
 	Bytes int
 }
 
-const (
-	headerSize = int(unsafe.Sizeof(header{}))
-	liveMagic  = 0xa110ca7ed0ff4ea9
-	freedMagic = 0xf7eedf7eedf7eed5
-)
+type noCopy struct{}
 
-type header struct {
-	owner uint64
-	magic uint64
-}
-
-func headerOf(p unsafe.Pointer) *header { return (*header)(unsafe.Add(p, -headerSize)) }
-
-func checkLive(p unsafe.Pointer) {
-	if headerOf(p).magic != liveMagic {
-		panic(fmt.Sprintf("memory: use of %#x after it was freed", uintptr(p)))
-	}
-}
-
-var owners atomic.Uint64
+func (*noCopy) Lock()   {}
+func (*noCopy) Unlock() {}
 
 // Local is an Allocator for a single goroutine. Its zero value is ready for
 // use, and it must not be copied after first use. Using it from several
-// goroutines at once panics; use Shared for that.
+// goroutines at once panics, unless built with memory_unchecked; use Shared
+// for that.
 type Local struct {
-	busy  atomic.Bool
-	id    uint64
+	_     noCopy
+	g     guard
 	a     modernc.Allocator
 	stats Stats
 }
 
-func (l *Local) enter() {
-	if !l.busy.CompareAndSwap(false, true) {
-		panic("memory: Local used by several goroutines at once; use Shared")
-	}
-	if l.id == 0 {
-		l.id = owners.Add(1)
-	}
-}
-
-func (l *Local) exit() { l.busy.Store(false) }
-
 func (l *Local) admit(base unsafe.Pointer) unsafe.Pointer {
-	*(*header)(base) = header{owner: l.id, magic: liveMagic}
 	l.stats.Live++
 	l.stats.Bytes += modernc.UnsafeUsableSize(base) - headerSize
-	return unsafe.Add(base, headerSize)
+	return l.g.stamp(base)
 }
 
 func (l *Local) retire(p unsafe.Pointer) unsafe.Pointer {
-	h := headerOf(p)
-	switch {
-	case h.magic == freedMagic:
-		panic(fmt.Sprintf("memory: %#x is already freed", uintptr(p)))
-	case h.magic != liveMagic:
-		panic(fmt.Sprintf("memory: %#x is not a live allocation: already freed, or never allocated here", uintptr(p)))
-	case h.owner != l.id:
-		panic(fmt.Sprintf("memory: %#x belongs to a different allocator", uintptr(p)))
-	}
-	h.magic = freedMagic
-	base := unsafe.Pointer(h)
+	base := l.g.verify(p)
 	l.stats.Live--
 	l.stats.Bytes -= modernc.UnsafeUsableSize(base) - headerSize
 	return base
@@ -100,8 +61,8 @@ func withHeader(size int) (int, error) {
 }
 
 func (l *Local) calloc(size int) (unsafe.Pointer, error) {
-	l.enter()
-	defer l.exit()
+	l.g.enter()
+	defer l.g.exit()
 	total, err := withHeader(size)
 	if err != nil {
 		return nil, err
@@ -114,8 +75,8 @@ func (l *Local) calloc(size int) (unsafe.Pointer, error) {
 }
 
 func (l *Local) realloc(p unsafe.Pointer, size int) (unsafe.Pointer, error) {
-	l.enter()
-	defer l.exit()
+	l.g.enter()
+	defer l.g.exit()
 	total, err := withHeader(size)
 	if err != nil {
 		return nil, err
@@ -130,31 +91,32 @@ func (l *Local) realloc(p unsafe.Pointer, size int) (unsafe.Pointer, error) {
 }
 
 func (l *Local) free(p unsafe.Pointer) error {
-	l.enter()
-	defer l.exit()
+	l.g.enter()
+	defer l.g.exit()
 	return l.a.UnsafeFree(l.retire(p))
 }
 
 // Stats reports the allocations l currently holds.
 func (l *Local) Stats() Stats {
-	l.enter()
-	defer l.exit()
+	l.g.enter()
+	defer l.g.exit()
 	return l.stats
 }
 
 // Trim returns retained empty pages to the operating system.
 func (l *Local) Trim() error {
-	l.enter()
-	defer l.exit()
+	l.g.enter()
+	defer l.g.exit()
 	return l.a.Trim()
 }
 
 // Close unmaps every page of l, invalidating everything allocated from it, and
 // leaves l ready for reuse. Handles from before Close are rejected afterwards.
 func (l *Local) Close() error {
-	l.enter()
-	defer l.exit()
-	l.id, l.stats = 0, Stats{}
+	l.g.enter()
+	defer l.g.exit()
+	l.g.reset()
+	l.stats = Stats{}
 	return l.a.Close()
 }
 

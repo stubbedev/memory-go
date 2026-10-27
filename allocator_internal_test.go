@@ -1,3 +1,5 @@
+//go:build !memory_unchecked
+
 package memory
 
 import (
@@ -10,13 +12,13 @@ func TestLocalRejectsConcurrentEntry(t *testing.T) {
 
 	var l Local
 	defer l.Close()
-	l.busy.Store(true)
+	l.g.busy.Store(true)
 	defer func() {
 		msg, _ := recover().(string)
 		if !strings.Contains(msg, "several goroutines") {
 			t.Fatalf("panic = %q, want concurrent-use panic", msg)
 		}
-		l.busy.Store(false)
+		l.g.busy.Store(false)
 	}()
 	_, _ = New[int](&l)
 }

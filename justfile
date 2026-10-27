@@ -4,20 +4,26 @@
 default:
     @just --list
 
-# Run every release gate in order: vet, lint, test, race, build.
-check: vet lint test race build
+# Run every release gate in order: vet, lint, test, test-unchecked, race, build.
+check: vet lint test test-unchecked race build
 
 # Static analysis of every package with go vet.
 vet:
     go vet ./...
 
-# Lint every package; settings live in .golangci.yml.
+# Lint every package, with and without the guards; settings live in .golangci.yml.
 lint:
     golangci-lint run
+    golangci-lint run --build-tags memory_unchecked
 
 # Run the test suite for every package.
 test:
     go test ./...
+
+# Run the test suite with the misuse guards compiled out.
+test-unchecked:
+    go vet -tags memory_unchecked ./...
+    go test -tags memory_unchecked ./...
 
 # Run the test suite under the race detector, which needs cgo.
 race:

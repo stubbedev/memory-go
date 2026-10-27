@@ -51,10 +51,8 @@ balanced binary tree of 2²⁰ − 1 nodes alive (`just bench`, linux/amd64, 8 t
 | `*goNode` on the Go heap | 3.64 ms |
 | `memory.Ptr[offNode]` off-heap | 0.13 ms |
 
-Allocation itself is slower than Go's: `New` + `Free` takes about 42 ns against
-9 ns for `new`, and the hashmap's set + get takes 34 ns against 19 ns for a Go
-map. About half of the allocation cost is the atomic guard that turns
-concurrent use of a `Local` into a panic.
+Allocation itself is slower than Go's, and the misuse guards account for
+about half of it; see [Opting out](#opting-out) for the numbers.
 
 ## Handles
 
@@ -94,6 +92,19 @@ panicking, since their pages are unmapped.
 Allocation failures (out of memory, negative or overflowing sizes, pointer
 types) come back as errors.
 
+### Opting out
+
+Build with `-tags memory_unchecked` to compile the guards out: no header, no
+liveness or owner checks and no concurrency guard. Misuse then corrupts memory
+silently instead of panicking, so test without the tag first. The
+pointer-type check and `Stats` remain. Only the final binary's build decides,
+so a library depending on memory-go cannot turn the checks off for its users.
+
+| Benchmark | Checked | `memory_unchecked` | Go |
+| --- | --- | --- | --- |
+| `New` + `Free` | 43 ns | 24 ns | 9 ns (`new`) |
+| hashmap set + get | 36 ns | 29 ns | 19 ns (map) |
+
 ## Allocators
 
 | Type | Use |
@@ -122,10 +133,11 @@ Containers are not safe for concurrent use, even on a `Shared` allocator.
 
 | Recipe | What it does |
 | --- | --- |
-| `just check` | Every release gate in order: vet, lint, test, race, build |
+| `just check` | Every release gate in order: vet, lint, test, test-unchecked, race, build |
 | `just vet` | Static analysis with `go vet` |
 | `just lint` | `golangci-lint run` against the strict config in `.golangci.yml` |
 | `just test` | `go test ./...` |
+| `just test-unchecked` | `go test ./...` with the guards compiled out |
 | `just race` | Tests under the race detector (needs cgo; the library itself never does) |
 | `just build` | Compile-check every package |
 | `just fuzz [time]` | Fuzz each container against its Go model, 30s each by default |
@@ -147,6 +159,7 @@ from downloading itself.
 ## CI
 
 `.github/workflows/test.yml` runs vet and tests on Linux, macOS and Windows,
+with and without `memory_unchecked`,
 the race detector on Linux and macOS, cross-builds for arm64, 386, FreeBSD and
 Windows on arm64, golangci-lint, and a minute of fuzzing per container.
 `.github/workflows/security.yml` runs CodeQL (Go and GitHub Actions), Grype and

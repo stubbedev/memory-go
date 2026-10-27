@@ -17,4 +17,9 @@
 // several goroutines at once. A handle to memory that has since been freed
 // and handed out again cannot be told apart from its new owner, and Refs and
 // Go pointers obtained from handles are not checked.
+//
+// Building with the memory_unchecked tag compiles these checks out: no
+// header, no liveness or owner checks and no concurrency guard, roughly
+// halving the cost of an allocation. Misuse then corrupts memory silently.
+// The pointer-type check and Stats remain.
 package memory
