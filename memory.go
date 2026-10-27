@@ -16,7 +16,7 @@ func (Ptr[T]) offHeap() {}
 // the T is already freed.
 func (p Ptr[T]) Value() *T {
 	if p.p != nil {
-		checkLive(unsafe.Pointer(p.p))
+		checkLive(unsafe.Pointer(p.p), sizeOf[T](1))
 	}
 	return p.p
 }
@@ -60,7 +60,7 @@ func (s Slice[T]) Elems() []T {
 	if s.n == 0 {
 		return nil
 	}
-	checkLive(unsafe.Pointer(s.p))
+	checkLive(unsafe.Pointer(s.p), sizeOf[T](s.n))
 	return unsafe.Slice(s.p, s.n)
 }
 

@@ -10,12 +10,12 @@ const Checked = false
 
 const headerSize = 0
 
-func checkLive(unsafe.Pointer) {}
+func checkLive(unsafe.Pointer, int) {}
 
 type guard struct{}
 
-func (guard) enter()                                   {}
-func (guard) exit()                                    {}
-func (guard) reset()                                   {}
-func (guard) stamp(base unsafe.Pointer) unsafe.Pointer { return base }
-func (guard) verify(unsafe.Pointer)                    {}
+func (guard) enter()                                          {}
+func (guard) exit()                                           {}
+func (guard) reset()                                          {}
+func (guard) stamp(base unsafe.Pointer, _ int) unsafe.Pointer { return base }
+func (guard) verify(unsafe.Pointer, int)                      {}

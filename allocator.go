@@ -70,13 +70,13 @@ func (l *Local) release(base unsafe.Pointer, total int) error {
 	return l.a.UnsafeFree(base)
 }
 
-func (l *Local) admit(base unsafe.Pointer, reserved int) unsafe.Pointer {
+func (l *Local) admit(base unsafe.Pointer, reserved, size int) unsafe.Pointer {
 	l.stats.Live++
 	l.stats.Bytes += reserved - headerSize
-	return l.g.stamp(base)
+	return l.g.stamp(base, size)
 }
 
-func (l *Local) retire(p unsafe.Pointer, total int) (unsafe.Pointer, int) {
+func (l *Local) retire(p unsafe.Pointer, size, total int) (unsafe.Pointer, int) {
 	base := baseOf(p)
 	var reserved int
 	if isDirect(total) {
@@ -84,9 +84,9 @@ func (l *Local) retire(p unsafe.Pointer, total int) (unsafe.Pointer, int) {
 		if reserved, ok = l.d.reserved(base); !ok {
 			panic(fmt.Sprintf("memory: %#x is not a live allocation of this allocator: already freed, from another allocator, or never allocated", uintptr(p)))
 		}
-		l.g.verify(p)
+		l.g.verify(p, size)
 	} else {
-		l.g.verify(p)
+		l.g.verify(p, size)
 		reserved = modernc.UnsafeUsableSize(base)
 	}
 	l.stats.Live--
@@ -105,7 +105,7 @@ func (l *Local) calloc(size int) (unsafe.Pointer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return l.admit(base, reserved), nil
+	return l.admit(base, reserved, size), nil
 }
 
 func (l *Local) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
@@ -119,28 +119,28 @@ func (l *Local) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, er
 	if err != nil {
 		return nil, err
 	}
-	base, reserved := l.retire(p, oldTotal)
+	base, reserved := l.retire(p, oldSize, oldTotal)
 	if !isDirect(oldTotal) && !isDirect(total) {
 		moved, err := l.a.UnsafeRealloc(base, total)
 		if err != nil {
-			l.admit(base, reserved)
+			l.admit(base, reserved, oldSize)
 			return nil, err
 		}
-		return l.admit(moved, modernc.UnsafeUsableSize(moved)), nil
+		return l.admit(moved, modernc.UnsafeUsableSize(moved), size), nil
 	}
 	if isDirect(oldTotal) && isDirect(total) {
 		if rounded, err := pageRound(total); err == nil && rounded == reserved {
-			return l.admit(base, reserved), nil
+			return l.admit(base, reserved, size), nil
 		}
 	}
 	moved, movedReserved, err := l.acquire(total)
 	if err != nil {
-		l.admit(base, reserved)
+		l.admit(base, reserved, oldSize)
 		return nil, err
 	}
 	n := min(oldSize, size)
 	copy(unsafe.Slice((*byte)(unsafe.Add(moved, headerSize)), n), unsafe.Slice((*byte)(p), n))
-	q := l.admit(moved, movedReserved)
+	q := l.admit(moved, movedReserved, size)
 	return q, l.release(base, oldTotal)
 }
 
@@ -151,7 +151,7 @@ func (l *Local) free(p unsafe.Pointer, size int) error {
 	if err != nil {
 		return err
 	}
-	base, _ := l.retire(p, total)
+	base, _ := l.retire(p, size, total)
 	return l.release(base, total)
 }
 

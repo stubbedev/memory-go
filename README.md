@@ -106,10 +106,11 @@ keeps the freed header readable. `Trim` unmaps every kept mapping.
 
 ## Panics instead of corruption
 
-Every allocation carries a 16-byte header recording its allocator and whether
-it is live. These panic at the point of the mistake:
+Every allocation carries a 16-byte header recording its allocator, its size
+and whether it is live. These panic at the point of the mistake:
 
-- freeing twice, or resizing a handle that was already resized
+- freeing twice, or freeing, resizing or reading a handle that was already
+  resized, even when the resize kept the same address
 - freeing or resizing through a different allocator than the one that allocated
 - reading a freed `Ptr`, `Slice` or `String` through the handle
 - putting a `pool.Item` back twice or into another pool, or reading it after `Put`

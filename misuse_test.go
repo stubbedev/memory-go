@@ -120,3 +120,50 @@ func TestForeignAllocatorPanicsOnLargeAllocation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestInPlaceResizeInvalidatesOldHandle(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []int{100, 4 << 20} {
+		a := memtest.Local(t)
+		s, err := memory.MakeSlice[byte](a, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shrunk, err := memory.ResizeSlice(a, s, n-10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustPanic(t, "was resized", func() { _ = memory.FreeSlice(a, s) })
+		mustPanic(t, "was resized", func() { _, _ = memory.ResizeSlice(a, s, n) })
+		mustPanic(t, "after it was resized", func() { s.Elems() })
+		if len(shrunk.Elems()) != n-10 {
+			t.Fatalf("len = %d, want %d", len(shrunk.Elems()), n-10)
+		}
+		if err := memory.FreeSlice(a, shrunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestAppendStringInvalidatesOldString(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	s, err := memory.NewString(a, "ab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grown, err := memory.AppendString(a, s, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustPanic(t, "after it was resized", func() { _ = s.String() })
+	mustPanic(t, "was resized", func() { _ = memory.FreeString(a, s) })
+	if grown.String() != "abc" {
+		t.Fatalf("grown = %q, want abc", grown.String())
+	}
+	if err := memory.FreeString(a, grown); err != nil {
+		t.Fatal(err)
+	}
+}
