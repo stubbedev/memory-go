@@ -7,7 +7,7 @@ Memory comes from [modernc.org/memory](https://pkg.go.dev/modernc.org/memory),
 a pure Go allocator that maps pages from the OS (`mmap`, `VirtualAlloc`)
 directly. `CGO_ENABLED=0` builds work. The API follows
 [mm-go](https://github.com/joetifa2003/mm-go), which does the same on top of C
-`calloc` through cgo.
+`calloc` through cgo, but misuse panics instead of corrupting memory.
 
 ```sh
 go get github.com/stubbedev/memory-go
@@ -19,41 +19,80 @@ go get github.com/stubbedev/memory-go
 var a memory.Local
 defer a.Close()
 
-type vec3 struct{ X, Y, Z float64 }
+type node struct {
+	Key         int
+	Name        memory.String
+	Left, Right memory.Ptr[node]
+}
 
-v, err := memory.New[vec3](&a)
+n, err := memory.New[node](&a)
 if err != nil {
 	return err
 }
-defer memory.Free(&a, v)
-*v = vec3{X: 1, Y: 2, Z: 3}
+n.Value().Key = 42
 
 xs, err := vector.New[int](&a, 0)
 if err != nil {
 	return err
 }
-defer xs.Free()
 if err := xs.Push(42); err != nil {
 	return err
 }
 ```
 
-## Rules
+## Why
 
-- **No Go pointers off-heap.** The GC cannot see memory it does not own, so a
-  stored pointer, slice, string, map, channel, func or interface could be
-  collected while still referenced. Every allocation checks the type and
-  returns `ErrHoldsPointers` when it holds one; the error names the offending
-  field (`memory: main.user: .Name is string: type holds Go pointers`). The
-  verdict is cached per type.
-- **Free what you allocate, exactly once.** `Free`/`FreeSlice` take what
-  `New`/`MakeSlice`/`ResizeSlice` returned, not a reslice of it. Use after free
-  and double free are memory corruption, not panics.
-- **Pointers into containers are short-lived.** `Ptr`, `Slice` and anything
-  that points into a container are invalid after the next call that may grow
-  it.
-- **Close releases everything.** `Close` unmaps every page of the allocator,
-  invalidating all values and containers built on it.
+A large pointer-rich structure costs the GC on every cycle, because it must
+trace every pointer. Off-heap it costs nothing. Full `runtime.GC()` with a
+balanced binary tree of 2²⁰ − 1 nodes alive (`just bench`, linux/amd64, 8 threads):
+
+| Tree | GC cycle |
+| --- | --- |
+| `*goNode` on the Go heap | 3.64 ms |
+| `memory.Ptr[offNode]` off-heap | 0.13 ms |
+
+Allocation itself is slower than Go's: `New` + `Free` takes about 42 ns against
+9 ns for `new`, and the hashmap's set + get takes 34 ns against 19 ns for a Go
+map. About half of the allocation cost is the atomic guard that turns
+concurrent use of a `Local` into a panic.
+
+## Handles
+
+Off-heap memory may not hold Go pointers, since the GC cannot see them there.
+Every allocation checks its type and returns `ErrHoldsPointers` naming the
+offending field (`memory: main.user: .Name is string: type holds Go
+pointers`). These handles point only into off-heap memory and may be stored
+there:
+
+| Handle | Owns | Created by | Released by |
+| --- | --- | --- | --- |
+| `Ptr[T]` | one `T` | `New` | `Free` |
+| `Slice[T]` | `n` consecutive `T`s | `MakeSlice`, `ResizeSlice` | `FreeSlice` |
+| `String` | UTF-8 bytes | `NewString`, `AppendString` | `FreeString` |
+| `Ref[T]` | nothing | `Ptr.Ref`, `Slice.Ref`, `typedarena` | its owner |
+
+`Ptr.Value`, `Slice.Elems` and `String.String` hand out ordinary Go pointers,
+slices and strings for access. Those stay valid until the handle is freed or
+resized and must not outlive it.
+
+## Panics instead of corruption
+
+Every allocation carries a 16-byte header recording its allocator and whether
+it is live. These panic at the point of the mistake:
+
+- freeing twice, or resizing a handle that was already resized
+- freeing or resizing through a different allocator than the one that allocated
+- reading a freed `Ptr`, `Slice` or `String` through the handle
+- using one `Local` from several goroutines at once
+- out-of-range indices in every container
+
+Not caught: a stale handle whose memory was freed and has since been handed
+out again, `Ref`s, and Go pointers or slices obtained from a handle and kept
+after it was freed. After `Close`, touching old handles faults instead of
+panicking, since their pages are unmapped.
+
+Allocation failures (out of memory, negative or overflowing sizes, pointer
+types) come back as errors.
 
 ## Allocators
 
@@ -63,34 +102,35 @@ if err := xs.Push(42); err != nil {
 | `memory.Shared` | Several goroutines; a mutex serialises every call. |
 
 Both satisfy `memory.Allocator`, which every function and container takes.
-`Trim` returns retained empty pages to the OS.
+`Stats` reports live allocations and bytes, `Trim` returns retained empty pages
+to the OS, and `Close` releases everything at once.
 
 ## Packages
 
 | Package | What it is |
 | --- | --- |
-| `memory` | `New`, `Free`, `MakeSlice`, `ResizeSlice`, `FreeSlice` |
-| `vector` | Growable slice: `Push`, `Pop`, `At`, `Ptr`, `Set`, `RemoveAt`, `DeleteFunc`, `Truncate`, `Reserve`, `All` |
-| `hashmap` | Open addressing with linear probing and backward-shift deletion, hashed with `hash/maphash` |
-| `linkedlist` | Doubly linked list whose nodes sit in one pooled vector and link by index; freed nodes are reused |
-| `minheap` | Binary heap ordered by a `less` func, with `DeleteFunc` |
-| `typedarena` | Chunked bump allocator for one type, freed all at once |
+| `memory` | Allocators and the `Ptr`, `Ref`, `Slice` and `String` handles |
+| `vector` | Growable slice: `Push`, `Pop`, `At`, `Ptr`, `Set`, `RemoveAt`, `DeleteFunc`, `Truncate`, `Reserve`, `Clip`, `All` |
+| `hashmap` | Linear probing with backward-shift deletion and stored hashes; capacity hint, `Clip` |
+| `linkedlist` | Doubly linked list in one pooled node vector linked by index; freed nodes are reused, `Clip` compacts |
+| `minheap` | Binary heap ordered by a `less` func, with `DeleteFunc` and `Clip` |
+| `typedarena` | Chunked bump allocator for one type, handing out `Ref`s, freed all at once |
 
-Allocation failures come back as errors with context; out-of-range indices
-panic like slice indexing does.
+Containers are not safe for concurrent use, even on a `Shared` allocator.
 
 ## Recipes
 
 | Recipe | What it does |
 | --- | --- |
-| `just check` | Every release gate in order: vet, lint, test, build |
+| `just check` | Every release gate in order: vet, lint, test, race, build |
 | `just vet` | Static analysis with `go vet` |
 | `just lint` | `golangci-lint run` against the strict config in `.golangci.yml` |
 | `just test` | `go test ./...` |
+| `just race` | Tests under the race detector (needs cgo; the library itself never does) |
 | `just build` | Compile-check every package |
+| `just fuzz [time]` | Fuzz each container against its Go model, 30s each by default |
+| `just bench` | All benchmarks, including the GC comparison |
 | `just fmt` | Format every Go source in place |
-
-`go test -race` needs `CGO_ENABLED=1`; the library itself never does.
 
 Every dev tool (Go toolchain pinned to the version go.mod declares, gopls,
 golangci-lint, delve, just, git, gh) comes from the flake: `direnv allow`
@@ -106,15 +146,19 @@ from downloading itself.
 
 ## CI
 
+`.github/workflows/test.yml` runs vet and tests on Linux, macOS and Windows,
+the race detector on Linux and macOS, cross-builds for arm64, 386, FreeBSD and
+Windows on arm64, golangci-lint, and a minute of fuzzing per container.
 `.github/workflows/security.yml` runs CodeQL (Go and GitHub Actions), Grype and
-govulncheck, uploading findings to code scanning; dependency review gates
-pull requests. Dependabot keeps the module and the workflows current.
+govulncheck, uploading findings to code scanning; dependency review gates pull
+requests. Dependabot keeps the module and the workflows current.
 
 ## Linting
 
 `.golangci.yml` starts from the standard linter set and layers on bodyclose,
 copyloopvar, errorlint, gosec, intrange, misspell, modernize, nolintlint,
-perfsprint, revive, unconvert, unparam, usestdlibvars and whitespace, with
-gofumpt and gci as formatters. No issue caps: every finding fails the build.
-gosec's unsafe audit (G103) is waived for `layout.go` only, the single place
-where typed values meet raw memory.
+perfsprint, revive (default rules plus `exported`), unconvert, unparam,
+usestdlibvars and whitespace, with gofumpt and gci as formatters. No issue
+caps: every finding fails the build. gosec's unsafe audit (G103) is waived only
+for `allocator.go`, `memory.go` and `string.go`, the boundary between typed
+values and raw memory.
