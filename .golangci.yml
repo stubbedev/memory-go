@@ -33,6 +33,7 @@ linters:
       strconcat: true
       sprintf1: true
     revive:
+      enable-default-rules: true
       rules:
         # Stub doc comments are noise; package docs carry the context.
         - name: exported
