@@ -11,6 +11,7 @@ import (
 
 type particle struct {
 	X, Y, VX, VY float32
+	Next         memory.Ref[particle]
 }
 
 func TestRejectsInvalidArguments(t *testing.T) {
@@ -27,6 +28,7 @@ func TestRejectsInvalidArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ta.Free()
 	if _, err := ta.AllocSlice(-1); !errors.Is(err, memory.ErrNegativeLen) {
 		t.Errorf("AllocSlice(-1): err = %v, want ErrNegativeLen", err)
 	}
@@ -39,17 +41,19 @@ func TestAllocationsAreDistinctAndStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ps []*particle
+	defer ta.Free()
+	var head memory.Ref[particle]
 	for i := range 1000 {
-		p, err := ta.Alloc()
+		r, err := ta.Alloc()
 		if err != nil {
 			t.Fatal(err)
 		}
+		p := r.Value()
 		if *p != (particle{}) {
 			t.Fatalf("Alloc %d not zeroed: %+v", i, *p)
 		}
-		p.X = float32(i)
-		ps = append(ps, p)
+		p.X, p.Next = float32(i), head
+		head = r
 	}
 	big, err := ta.AllocSlice(100)
 	if err != nil {
@@ -68,17 +72,14 @@ func TestAllocationsAreDistinctAndStable(t *testing.T) {
 	for i := range small {
 		small[i].Y = -2
 	}
-	seen := make(map[*particle]bool, len(ps))
-	for i, p := range ps {
-		if p.X != float32(i) || p.Y != 0 {
-			t.Fatalf("particle %d = %+v, overwritten", i, *p)
+	want := float32(999)
+	for r := head; !r.IsNil(); r = r.Value().Next {
+		if p := r.Value(); p.X != want || p.Y != 0 {
+			t.Fatalf("particle %v = %+v, overwritten", want, *p)
 		}
-		if seen[p] {
-			t.Fatalf("particle %d shares an address", i)
-		}
-		seen[p] = true
+		want--
 	}
-	if err := ta.Free(); err != nil {
-		t.Fatal(err)
+	if want != -1 {
+		t.Fatalf("walked to %v, want all 1000 particles", want+1)
 	}
 }

@@ -2,7 +2,6 @@ package vector_test
 
 import (
 	"errors"
-	"math/rand/v2"
 	"slices"
 	"testing"
 
@@ -19,79 +18,89 @@ func TestRejectsPointerElements(t *testing.T) {
 	}
 }
 
-func TestMatchesSlice(t *testing.T) {
-	t.Parallel()
-
-	v, err := vector.New[int](memtest.Local(t), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rng := rand.New(rand.NewPCG(1, 2))
-	var model []int
-	for step := range 20_000 {
-		switch op := rng.IntN(10); {
-		case op < 5:
-			x := rng.Int()
-			if err := v.Push(x); err != nil {
-				t.Fatal(err)
-			}
-			model = append(model, x)
-		case op == 5:
-			got, ok := v.Pop()
-			if ok != (len(model) > 0) {
-				t.Fatalf("step %d: Pop ok = %v with len %d", step, ok, len(model))
-			}
-			if ok {
-				if want := model[len(model)-1]; got != want {
-					t.Fatalf("step %d: Pop = %d, want %d", step, got, want)
+func FuzzMatchesSlice(f *testing.F) {
+	f.Add(memtest.Seed(1, 1<<15))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		v, err := vector.New[uint64](memtest.Local(t), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer v.Free()
+		ops := memtest.NewOps(data)
+		var model []uint64
+		for step := 0; ops.More(); step++ {
+			switch op := ops.Int(12); {
+			case op < 5:
+				x := ops.Uint64()
+				if err := v.Push(x); err != nil {
+					t.Fatal(err)
 				}
-				model = model[:len(model)-1]
+				model = append(model, x)
+			case op == 5:
+				got, ok := v.Pop()
+				if ok != (len(model) > 0) || ok && got != model[len(model)-1] {
+					t.Fatalf("step %d: Pop = %d, %v", step, got, ok)
+				}
+				if ok {
+					model = model[:len(model)-1]
+				}
+			case op == 6 && len(model) > 0:
+				i := ops.Int(len(model))
+				if got := v.RemoveAt(i); got != model[i] {
+					t.Fatalf("step %d: RemoveAt(%d) = %d, want %d", step, i, got, model[i])
+				}
+				model = slices.Delete(model, i, i+1)
+			case op == 7 && len(model) > 0:
+				i, x := ops.Int(len(model)), ops.Uint64()
+				v.Set(i, x)
+				model[i] = x
+			case op == 8:
+				mod := uint64(ops.Int(7) + 2)
+				del := func(x uint64) bool { return x%mod == 0 }
+				before := len(model)
+				model = slices.DeleteFunc(model, del)
+				if got, want := v.DeleteFunc(del), before-len(model); got != want {
+					t.Fatalf("step %d: DeleteFunc = %d, want %d", step, got, want)
+				}
+			case op == 9 && len(model) > 0:
+				n := ops.Int(len(model))
+				v.Truncate(n)
+				model = model[:n]
+			case op == 10:
+				if err := v.Clip(); err != nil {
+					t.Fatal(err)
+				}
+				if v.Cap() != len(model) {
+					t.Fatalf("step %d: Cap after Clip = %d, want %d", step, v.Cap(), len(model))
+				}
+			case op == 11:
+				n := len(model) + ops.Int(64)
+				if err := v.Reserve(n); err != nil {
+					t.Fatal(err)
+				}
+				if v.Cap() < n {
+					t.Fatalf("step %d: Cap after Reserve(%d) = %d", step, n, v.Cap())
+				}
 			}
-		case op == 6 && len(model) > 0:
-			i := rng.IntN(len(model))
-			if got := v.RemoveAt(i); got != model[i] {
-				t.Fatalf("step %d: RemoveAt(%d) = %d, want %d", step, i, got, model[i])
+			if v.Len() != len(model) {
+				t.Fatalf("step %d: Len = %d, want %d", step, v.Len(), len(model))
 			}
-			model = slices.Delete(model, i, i+1)
-		case op == 7 && len(model) > 0:
-			i, x := rng.IntN(len(model)), rng.Int()
-			v.Set(i, x)
-			model[i] = x
-		case op == 8 && rng.IntN(50) == 0:
-			odd := func(x int) bool { return x%2 != 0 }
-			before := len(model)
-			model = slices.DeleteFunc(model, odd)
-			if got, want := v.DeleteFunc(odd), before-len(model); got != want {
-				t.Fatalf("step %d: DeleteFunc = %d, want %d", step, got, want)
+		}
+		if !slices.Equal(v.Slice(), model) {
+			t.Fatal("Slice differs from model")
+		}
+		var walked []uint64
+		for i, x := range v.All() {
+			if i != len(walked) {
+				t.Fatalf("All index = %d, want %d", i, len(walked))
 			}
-		case op == 9 && len(model) > 0 && rng.IntN(20) == 0:
-			n := rng.IntN(len(model))
-			v.Truncate(n)
-			model = model[:n]
+			walked = append(walked, x)
 		}
-		if v.Len() != len(model) {
-			t.Fatalf("step %d: Len = %d, want %d", step, v.Len(), len(model))
+		if !slices.Equal(walked, model) {
+			t.Fatal("All differs from model")
 		}
-	}
-	if !slices.Equal(v.Slice(), model) {
-		t.Fatal("Slice differs from model")
-	}
-	var walked []int
-	for i, x := range v.All() {
-		if i != len(walked) {
-			t.Fatalf("All index = %d, want %d", i, len(walked))
-		}
-		walked = append(walked, x)
-	}
-	if !slices.Equal(walked, model) {
-		t.Fatal("All differs from model")
-	}
-	if err := v.Free(); err != nil {
-		t.Fatal(err)
-	}
-	if v.Len() != 0 || v.Cap() != 0 {
-		t.Fatalf("after Free Len, Cap = %d, %d", v.Len(), v.Cap())
-	}
+	})
 }
 
 func TestIndexOutOfRangePanics(t *testing.T) {
@@ -101,6 +110,7 @@ func TestIndexOutOfRangePanics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer v.Free()
 	defer func() {
 		if recover() == nil {
 			t.Fatal("At(0) on empty vector did not panic")

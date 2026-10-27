@@ -6,16 +6,25 @@ import (
 	"math"
 	"reflect"
 	"sync"
-	"unsafe"
 )
 
 var (
+	// ErrHoldsPointers reports a type that holds Go pointers and so cannot
+	// live off-heap.
 	ErrHoldsPointers = errors.New("type holds Go pointers")
-	ErrNegativeLen   = errors.New("negative length")
-	ErrTooLarge      = errors.New("allocation size overflows int")
+	// ErrNegativeLen reports a negative length or capacity.
+	ErrNegativeLen = errors.New("negative length")
+	// ErrTooLarge reports a size that overflows int.
+	ErrTooLarge = errors.New("allocation size overflows int")
 )
 
-var verdicts sync.Map
+type offHeap interface{ offHeap() }
+
+var (
+	offHeapType = reflect.TypeFor[offHeap]()
+	pkgPath     = reflect.TypeFor[Stats]().PkgPath()
+	verdicts    sync.Map
+)
 
 func checkType(t reflect.Type) error {
 	if v, ok := verdicts.Load(t); ok {
@@ -35,6 +44,9 @@ func checkType(t reflect.Type) error {
 }
 
 func findPointer(t reflect.Type, path string) (string, reflect.Type) {
+	if t.PkgPath() == pkgPath && t.Implements(offHeapType) {
+		return "", nil
+	}
 	switch t.Kind() {
 	case reflect.Bool,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
@@ -71,71 +83,4 @@ func byteSize[T any](n int) (int, error) {
 		return 0, fmt.Errorf("memory: %d×%s: %w", n, t, ErrTooLarge)
 	}
 	return max(n*size, 1), nil
-}
-
-func New[T any](a Allocator) (*T, error) {
-	size, err := byteSize[T](1)
-	if err != nil {
-		return nil, err
-	}
-	p, err := a.calloc(size)
-	if err != nil {
-		return nil, fmt.Errorf("memory: allocate %s: %w", reflect.TypeFor[T](), err)
-	}
-	return (*T)(p), nil
-}
-
-func Free[T any](a Allocator, p *T) error {
-	if p == nil {
-		return nil
-	}
-	if err := a.free(unsafe.Pointer(p)); err != nil {
-		return fmt.Errorf("memory: free %s: %w", reflect.TypeFor[T](), err)
-	}
-	return nil
-}
-
-func MakeSlice[T any](a Allocator, n int) ([]T, error) {
-	size, err := byteSize[T](n)
-	if err != nil || n == 0 {
-		return nil, err
-	}
-	p, err := a.calloc(size)
-	if err != nil {
-		return nil, fmt.Errorf("memory: allocate %d×%s: %w", n, reflect.TypeFor[T](), err)
-	}
-	return unsafe.Slice((*T)(p), n), nil
-}
-
-func ResizeSlice[T any](a Allocator, s []T, n int) ([]T, error) {
-	old := cap(s)
-	if old == 0 {
-		return MakeSlice[T](a, n)
-	}
-	size, err := byteSize[T](n)
-	if err != nil {
-		return nil, err
-	}
-	if n == 0 {
-		return nil, FreeSlice(a, s)
-	}
-	p, err := a.realloc(unsafe.Pointer(unsafe.SliceData(s)), size)
-	if err != nil {
-		return nil, fmt.Errorf("memory: resize %d×%s to %d: %w", old, reflect.TypeFor[T](), n, err)
-	}
-	r := unsafe.Slice((*T)(p), n)
-	if n > old {
-		clear(r[old:])
-	}
-	return r, nil
-}
-
-func FreeSlice[T any](a Allocator, s []T) error {
-	if cap(s) == 0 {
-		return nil
-	}
-	if err := a.free(unsafe.Pointer(unsafe.SliceData(s))); err != nil {
-		return fmt.Errorf("memory: free %d×%s: %w", cap(s), reflect.TypeFor[T](), err)
-	}
-	return nil
 }

@@ -1,8 +1,10 @@
 // Package linkedlist provides a doubly linked list whose nodes live off the Go
-// heap in one contiguous pool and link to each other by index.
+// heap in one contiguous pool and link to each other by index. Removed nodes
+// are reused by later insertions.
 package linkedlist
 
 import (
+	"errors"
 	"fmt"
 	"iter"
 
@@ -23,21 +25,26 @@ type node[T any] struct {
 	prev, next link
 }
 
+// List is a doubly linked list of off-heap Ts. It is not safe for concurrent
+// use. Pointers into it are valid until the next insertion or Clip.
 type List[T any] struct {
+	alloc      memory.Allocator
 	nodes      *vector.Vector[node[T]]
 	head, tail link
 	spare      link
 	n          int
 }
 
+// New returns an empty List.
 func New[T any](a memory.Allocator) (*List[T], error) {
 	nodes, err := vector.New[node[T]](a, 0)
 	if err != nil {
 		return nil, err
 	}
-	return &List[T]{nodes: nodes}, nil
+	return &List[T]{alloc: a, nodes: nodes}, nil
 }
 
+// Len returns the number of elements.
 func (l *List[T]) Len() int { return l.n }
 
 func (l *List[T]) node(at link) *node[T] { return l.nodes.Ptr(at.index()) }
@@ -55,6 +62,7 @@ func (l *List[T]) acquire(value T) (link, error) {
 	return linkTo(l.nodes.Len() - 1), nil
 }
 
+// PushBack appends value.
 func (l *List[T]) PushBack(value T) error {
 	at, err := l.acquire(value)
 	if err != nil {
@@ -71,6 +79,7 @@ func (l *List[T]) PushBack(value T) error {
 	return nil
 }
 
+// PushFront prepends value.
 func (l *List[T]) PushFront(value T) error {
 	at, err := l.acquire(value)
 	if err != nil {
@@ -106,6 +115,8 @@ func (l *List[T]) unlink(at link) T {
 	return value
 }
 
+// PopFront removes and returns the first element, or reports false if l is
+// empty.
 func (l *List[T]) PopFront() (T, bool) {
 	if l.head == none {
 		var zero T
@@ -114,6 +125,8 @@ func (l *List[T]) PopFront() (T, bool) {
 	return l.unlink(l.head), true
 }
 
+// PopBack removes and returns the last element, or reports false if l is
+// empty.
 func (l *List[T]) PopBack() (T, bool) {
 	if l.tail == none {
 		var zero T
@@ -140,12 +153,18 @@ func (l *List[T]) seek(i int) link {
 	return at
 }
 
+// At returns element i, walking from the nearer end. It panics if i is out of
+// range.
 func (l *List[T]) At(i int) T { return l.node(l.seek(i)).value }
 
+// Ptr returns a pointer to element i. It panics if i is out of range.
 func (l *List[T]) Ptr(i int) *T { return &l.node(l.seek(i)).value }
 
+// RemoveAt removes element i and returns it. It panics if i is out of range.
 func (l *List[T]) RemoveAt(i int) T { return l.unlink(l.seek(i)) }
 
+// IndexFunc returns the index of the first element for which match returns
+// true, or -1 if there is none.
 func (l *List[T]) IndexFunc(match func(T) bool) int {
 	for i, value := range l.All() {
 		if match(value) {
@@ -155,6 +174,8 @@ func (l *List[T]) IndexFunc(match func(T) bool) int {
 	return -1
 }
 
+// DeleteFunc removes every element for which del returns true and returns how
+// many it removed.
 func (l *List[T]) DeleteFunc(del func(T) bool) int {
 	removed := 0
 	for at := l.head; at != none; {
@@ -168,6 +189,31 @@ func (l *List[T]) DeleteFunc(del func(T) bool) int {
 	return removed
 }
 
+// Clip rebuilds the node pool in list order with no spare nodes, releasing
+// the memory of removed elements and making traversal sequential in memory.
+func (l *List[T]) Clip() error {
+	nodes, err := vector.New[node[T]](l.alloc, l.n)
+	if err != nil {
+		return err
+	}
+	for i, value := range l.All() {
+		nd := node[T]{value: value, prev: linkTo(i - 1)}
+		if i < l.n-1 {
+			nd.next = linkTo(i + 1)
+		}
+		if err := nodes.Push(nd); err != nil {
+			return errors.Join(err, nodes.Free())
+		}
+	}
+	old := l.nodes
+	l.nodes, l.spare = nodes, none
+	if l.n > 0 {
+		l.head, l.tail = linkTo(0), linkTo(l.n-1)
+	}
+	return old.Free()
+}
+
+// All yields each index and element in order.
 func (l *List[T]) All() iter.Seq2[int, T] {
 	return func(yield func(int, T) bool) {
 		i := 0
@@ -180,6 +226,7 @@ func (l *List[T]) All() iter.Seq2[int, T] {
 	}
 }
 
+// Free releases every node and leaves l empty.
 func (l *List[T]) Free() error {
 	l.head, l.tail, l.spare, l.n = none, none, none, 0
 	return l.nodes.Free()

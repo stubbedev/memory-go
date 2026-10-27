@@ -16,19 +16,18 @@ func Example() {
 	if err != nil {
 		panic(err)
 	}
-	*v = vec3{X: 1, Y: 2, Z: 3}
-	fmt.Println(*v)
+	*v.Value() = vec3{X: 1, Y: 2, Z: 3}
+	fmt.Println(*v.Value())
 
 	s, err := memory.MakeSlice[int](&a, 3)
 	if err != nil {
 		panic(err)
 	}
-	s[0], s[1], s[2] = 10, 20, 30
-	s, err = memory.ResizeSlice(&a, s, 4)
-	if err != nil {
+	copy(s.Elems(), []int{10, 20, 30})
+	if s, err = memory.ResizeSlice(&a, s, 4); err != nil {
 		panic(err)
 	}
-	fmt.Println(s)
+	fmt.Println(s.Elems())
 
 	_, err = memory.New[string](&a)
 	fmt.Println(err)
@@ -39,8 +38,47 @@ func Example() {
 	if err := memory.Free(&a, v); err != nil {
 		panic(err)
 	}
+	fmt.Println(a.Stats())
 	// Output:
 	// {1 2 3}
 	// [10 20 30 0]
 	// memory: string: type holds Go pointers
+	// {0 0}
+}
+
+func Example_linkedValues() {
+	var a memory.Local
+	defer a.Close()
+
+	type node struct {
+		Name memory.String
+		Next memory.Ptr[node]
+	}
+
+	var head memory.Ptr[node]
+	for _, name := range []string{"c", "b", "a"} {
+		n, err := memory.New[node](&a)
+		if err != nil {
+			panic(err)
+		}
+		label, err := memory.NewString(&a, name)
+		if err != nil {
+			panic(err)
+		}
+		*n.Value() = node{Name: label, Next: head}
+		head = n
+	}
+	for n := head; !n.IsNil(); {
+		fmt.Print(n.Value().Name, " ")
+		next := n.Value().Next
+		if err := memory.FreeString(&a, n.Value().Name); err != nil {
+			panic(err)
+		}
+		if err := memory.Free(&a, n); err != nil {
+			panic(err)
+		}
+		n = next
+	}
+	fmt.Println()
+	// Output: a b c
 }
