@@ -83,3 +83,43 @@ func TestAllocationsAreDistinctAndStable(t *testing.T) {
 		t.Fatalf("walked to %v, want all 1000 particles", want+1)
 	}
 }
+
+func TestResetReusesZeroedMemory(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	ta, err := typedarena.New[particle](a, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ta.Free()
+	fill := func() {
+		for i := range 100 {
+			r, err := ta.Alloc()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p := r.Value(); *p != (particle{}) {
+				t.Fatalf("Alloc %d after Reset not zeroed: %+v", i, *p)
+			}
+			r.Value().X = float32(i + 1)
+		}
+		if _, err := ta.AllocSlice(40); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fill()
+	if err := ta.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	before := a.Stats()
+	for range 3 {
+		fill()
+		if err := ta.Reset(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := a.Stats(); after != before {
+		t.Fatalf("Reset cycles changed allocator stats: %+v -> %+v", before, after)
+	}
+}

@@ -39,6 +39,7 @@ fuzz time="30s":
     go test ./hashmap -run='^$' -fuzz='^FuzzMatchesMap$' -fuzztime={{time}}
     go test ./linkedlist -run='^$' -fuzz='^FuzzMatchesSlice$' -fuzztime={{time}}
     go test ./minheap -run='^$' -fuzz='^FuzzMatchesSortedSlice$' -fuzztime={{time}}
+    go test ./pool -run='^$' -fuzz='^FuzzMatchesModel$' -fuzztime={{time}}
 
 # Run every benchmark, including the GC comparison.
 bench:

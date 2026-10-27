@@ -51,8 +51,22 @@ balanced binary tree of 2²⁰ − 1 nodes alive (`just bench`, linux/amd64, 8 t
 | `*goNode` on the Go heap | 3.64 ms |
 | `memory.Ptr[offNode]` off-heap | 0.13 ms |
 
-Allocation itself is slower than Go's, and the misuse guards account for
-about half of it; see [Opting out](#opting-out) for the numbers.
+Allocation speed depends on which tool you use. General-purpose `New` and
+`Free` go through modernc's size classes and are slower than Go's `new`. The
+typed `pool` and `typedarena` skip that: once a chunk has room, getting a value
+is a free-list pop or a bump of an index, and they beat `new` even with the
+misuse guards on. Per allocation (`just bench`, linux/amd64, 8 threads, this
+machine is noisy so read these as rough):
+
+| Operation | Checked | `memory_unchecked` | Go `new` |
+| --- | --- | --- | --- |
+| `pool` `Get` + `Put` | 4–5 ns | 4 ns | 10 ns |
+| `typedarena` `Alloc`, `Reset` every 1024 | 4.2 ns | 3.5 ns | 12.5 ns |
+| `New` + `Free` | 43 ns | 21–26 ns | 10 ns |
+| hashmap set + get | 36–45 ns | 36 ns | 19–26 ns (map) |
+
+Go's numbers leave out the GC work its allocations cause later; the off-heap
+ones have none.
 
 ## Handles
 
@@ -68,6 +82,7 @@ there:
 | `Slice[T]` | `n` consecutive `T`s | `MakeSlice`, `ResizeSlice` | `FreeSlice` |
 | `String` | UTF-8 bytes | `NewString`, `AppendString` | `FreeString` |
 | `Ref[T]` | nothing | `Ptr.Ref`, `Slice.Ref`, `typedarena` | its owner |
+| `pool.Item[T]` | one `T` | `Pool.Get` | `Pool.Put` |
 
 `Ptr.Value`, `Slice.Elems` and `String.String` hand out ordinary Go pointers,
 slices and strings for access. Those stay valid until the handle is freed or
@@ -81,6 +96,7 @@ it is live. These panic at the point of the mistake:
 - freeing twice, or resizing a handle that was already resized
 - freeing or resizing through a different allocator than the one that allocated
 - reading a freed `Ptr`, `Slice` or `String` through the handle
+- putting a `pool.Item` back twice or into another pool, or reading it after `Put`
 - using one `Local` from several goroutines at once
 - out-of-range indices in every container
 
@@ -99,11 +115,8 @@ liveness or owner checks and no concurrency guard. Misuse then corrupts memory
 silently instead of panicking, so test without the tag first. The
 pointer-type check and `Stats` remain. Only the final binary's build decides,
 so a library depending on memory-go cannot turn the checks off for its users.
-
-| Benchmark | Checked | `memory_unchecked` | Go |
-| --- | --- | --- | --- |
-| `New` + `Free` | 43 ns | 24 ns | 9 ns (`new`) |
-| hashmap set + get | 36 ns | 29 ns | 19 ns (map) |
+`memory.Checked` reports which build you are in. See [Why](#why) for what it
+saves.
 
 ## Allocators
 
@@ -125,7 +138,8 @@ to the OS, and `Close` releases everything at once.
 | `hashmap` | Linear probing with backward-shift deletion and stored hashes; capacity hint, `Clip` |
 | `linkedlist` | Doubly linked list in one pooled node vector linked by index; freed nodes are reused, `Clip` compacts |
 | `minheap` | Binary heap ordered by a `less` func, with `DeleteFunc` and `Clip` |
-| `typedarena` | Chunked bump allocator for one type, handing out `Ref`s, freed all at once |
+| `typedarena` | Chunked bump allocator for one type, handing out `Ref`s; `Reset` reuses its warm chunks, `Free` releases them |
+| `pool` | Free-list allocator for one type: `Get` and `Put` individual values without touching the allocator |
 
 Containers are not safe for concurrent use, even on a `Shared` allocator.
 
