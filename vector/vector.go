@@ -182,3 +182,14 @@ func (v *Vector[T]) Free() error {
 	v.buf = memory.Slice[T]{}
 	return err
 }
+
+// Append adds every value with one capacity check and one copy, which beats
+// calling Push in a loop by a wide margin on large inputs.
+func (v *Vector[T]) Append(values ...T) error {
+	if err := v.Reserve(v.n + len(values)); err != nil {
+		return err
+	}
+	copy(v.elems[v.n:], values)
+	v.n += len(values)
+	return nil
+}
