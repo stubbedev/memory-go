@@ -79,7 +79,7 @@ func New[T any](a memory.Allocator, chunkSize int) (*Pool[T], error) {
 func (p *Pool[T]) Len() int { return p.n }
 
 func nextOf[T any](s *slot[T]) *memory.Ref[slot[T]] {
-	return (*memory.Ref[slot[T]])(unsafe.Pointer(&s.value)) //nolint:gosec // every slot has room for a word past its tag
+	return (*memory.Ref[slot[T]])(unsafe.Pointer(&s.value))
 }
 
 // Get returns a zeroed T.

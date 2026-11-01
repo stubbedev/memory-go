@@ -30,7 +30,7 @@ type Hasher[K any] func(seed uint64, key K) uint64
 // It is not collision resistant, so an attacker who controls keys and learns
 // the seed could degrade a Map; use the default for untrusted keys.
 func Int[K Integer](seed uint64, key K) uint64 {
-	hi, lo := bits.Mul64(uint64(key)^seed, fold) //nolint:gosec // only the bit pattern matters
+	hi, lo := bits.Mul64(uint64(key)^seed, fold)
 	return hi ^ lo
 }
 

@@ -54,7 +54,7 @@ func (m *Strings[V]) Get(key string) (V, bool) {
 
 // GetBytes is Get for a key held as bytes, without converting it to a string.
 func (m *Strings[V]) GetBytes(key []byte) (V, bool) {
-	return m.Get(unsafe.String(unsafe.SliceData(key), len(key))) //nolint:gosec // lookup only reads the key
+	return m.Get(unsafe.String(unsafe.SliceData(key), len(key)))
 }
 
 // Ptr returns a pointer to the value for key, or reports false if key is

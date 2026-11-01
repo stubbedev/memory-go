@@ -101,10 +101,7 @@ func FuzzStringsMatchesMap(f *testing.F) {
 				t.Fatalf("Len = %d, want %d", m.Len(), len(model))
 			}
 		}
-		got := map[string]uint64{}
-		for k, v := range m.All() {
-			got[k] = v
-		}
+		got := maps.Collect(m.All())
 		if !maps.Equal(got, model) {
 			t.Fatalf("All = %v, want %v", got, model)
 		}

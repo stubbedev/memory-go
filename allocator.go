@@ -97,27 +97,35 @@ func reallocate(h *heap, d *direct, p unsafe.Pointer, oldSize, size int) (unsafe
 // goroutines at once panics, unless built with memory_unchecked; use Shared
 // for that.
 type Local struct {
-	_ noCopy
-	g guard
-	h heap
-	d direct
+	_    noCopy
+	g    guard
+	h    heap
+	d    direct
+	prof sites
 }
 
 func (l *Local) alloc(size, align int, f fill) (unsafe.Pointer, error) {
 	l.g.enter()
 	defer l.g.exit()
-	return allocate(&l.h, &l.d, size, align, f)
+	p, err := allocate(&l.h, &l.d, size, align, f)
+	l.prof.added(p)
+	return p, err
 }
 
 func (l *Local) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
 	l.g.enter()
 	defer l.g.exit()
-	return reallocate(&l.h, &l.d, p, oldSize, size)
+	q, err := reallocate(&l.h, &l.d, p, oldSize, size)
+	if q != nil {
+		l.prof.moved(p, q)
+	}
+	return q, err
 }
 
 func (l *Local) free(p unsafe.Pointer, size int) error {
 	l.g.enter()
 	defer l.g.exit()
+	l.prof.removed(p)
 	return deallocate(&l.h, &l.d, p, size)
 }
 
@@ -153,10 +161,12 @@ func (l *Local) Trim() error {
 }
 
 // Close unmaps every page of l, invalidating everything allocated from it, and
-// leaves l ready for reuse. Handles from before Close are rejected afterwards.
+// leaves l ready for reuse. Using a handle from before Close faults, or panics if
+// its address has been mapped again by this allocator.
 func (l *Local) Close() error {
 	l.g.enter()
 	defer l.g.exit()
+	l.prof.clear()
 	return errors.Join(l.d.closeLocked(), l.h.close())
 }
 
@@ -176,6 +186,7 @@ type Shared struct {
 	cache  sync.Pool
 	shards atomic.Pointer[[]*shard]
 	owner  uint32
+	prof   sites
 }
 
 func (s *Shared) shardAt(i uint32) *shard { return (*s.shards.Load())[i] }
@@ -224,20 +235,29 @@ func (s *Shared) put(sh *shard) {
 
 func (s *Shared) alloc(size, align int, f fill) (unsafe.Pointer, error) {
 	if size > smallMax {
-		return s.d.make(size, f)
+		p, err := s.d.make(size, f)
+		s.prof.added(p)
+		return p, err
 	}
 	sh := s.acquire()
 	defer s.put(sh)
-	return sh.h.alloc(size, classForAligned(size, align), f)
+	p, err := sh.h.alloc(size, classForAligned(size, align), f)
+	s.prof.added(p)
+	return p, err
 }
 
 func (s *Shared) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
 	sh := s.acquire()
 	defer s.put(sh)
-	return reallocate(&sh.h, &s.d, p, oldSize, size)
+	q, err := reallocate(&sh.h, &s.d, p, oldSize, size)
+	if q != nil {
+		s.prof.moved(p, q)
+	}
+	return q, err
 }
 
 func (s *Shared) free(p unsafe.Pointer, size int) error {
+	s.prof.removed(p)
 	if size > smallMax {
 		return s.d.release(p, size)
 	}
@@ -268,7 +288,7 @@ func (s *Shared) Stats() Stats {
 	defer s.unlockAll(shards)
 	stats, _ := s.d.snapshot()
 	for _, sh := range shards {
-		_ = sh.h.drain()
+		sh.h.deferred = errors.Join(sh.h.deferred, sh.h.drain())
 		stats = stats.plus(sh.h.stats)
 	}
 	return stats
@@ -304,6 +324,7 @@ func (s *Shared) Trim() error {
 func (s *Shared) Close() error {
 	shards := s.lockAll()
 	defer s.unlockAll(shards)
+	s.prof.clear()
 	errs := []error{s.d.closeLocked()}
 	s.owner = nextOwner()
 	for _, sh := range shards {

@@ -140,17 +140,18 @@ func spanOf(p unsafe.Pointer) *span {
 func (s *span) exhausted() bool { return s.free == nil && s.carved == s.slots }
 
 type heap struct {
-	cur     [numClasses]*span
-	partial [numClasses]*span
-	hot     []*span
-	cold    []*span
-	chunks  []unsafe.Pointer
-	remote  atomic.Pointer[freeSlot]
-	peers   *Shared
-	stats   Stats
-	touched int
-	owner   uint32
-	shard   uint32
+	cur      [numClasses]*span
+	partial  [numClasses]*span
+	hot      []*span
+	cold     []*span
+	chunks   []unsafe.Pointer
+	remote   atomic.Pointer[freeSlot]
+	peers    *Shared
+	stats    Stats
+	touched  int
+	deferred error
+	owner    uint32
+	shard    uint32
 }
 
 var owners atomic.Uint32
@@ -359,7 +360,8 @@ func (h *heap) decommit(s *span) error {
 }
 
 func (h *heap) trim() error {
-	errs := []error{h.drain()}
+	errs := []error{h.deferred, h.drain()}
+	h.deferred = nil
 	for c, s := range h.cur {
 		if s != nil && s.used == 0 {
 			h.cur[c] = nil
@@ -404,7 +406,9 @@ func (h *heap) unmapEmptyChunks() error {
 }
 
 func (h *heap) close() error {
-	errs := make([]error, 0, len(h.chunks))
+	errs := make([]error, 0, len(h.chunks)+1)
+	errs = append(errs, h.deferred)
+	h.deferred = nil
 	for _, base := range h.chunks {
 		errs = append(errs, unmap(base, chunkSize))
 	}
