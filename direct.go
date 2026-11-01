@@ -12,6 +12,8 @@ import (
 
 const (
 	hotBytes    = 4 << 20
+	hotMapping  = 32 << 20
+	liveHotPart = 8
 	retainSlack = 4 << 20
 )
 
@@ -39,6 +41,7 @@ type direct struct {
 	live       map[unsafe.Pointer]int
 	freed      []mapping
 	freedBytes int
+	hot        int
 	liveBytes  int
 	peak       int
 }
@@ -70,14 +73,18 @@ func (d *direct) reusable(size int) int {
 
 func (d *direct) reuse(i, total int) (unsafe.Pointer, int, error) {
 	m := d.freed[i]
+	dirty := total
 	if m.cold {
 		if err := osRecommit(unsafe.Add(m.base, osPageSize), m.size-osPageSize); err != nil {
 			return nil, 0, fmt.Errorf("recommit %d bytes at %#x: %w", m.size, uintptr(m.base), err)
 		}
+		dirty = min(total, osPageSize)
+	} else {
+		d.hot -= m.size
 	}
 	d.freed = slices.Delete(d.freed, i, i+1)
 	d.freedBytes -= m.size
-	clear(unsafe.Slice((*byte)(m.base), total))
+	clear(unsafe.Slice((*byte)(m.base), dirty))
 	d.admit(m.base, m.size)
 	return m.base, m.size, nil
 }
@@ -102,27 +109,31 @@ func (d *direct) free(base unsafe.Pointer) error {
 	d.liveBytes -= size
 	d.freed = append(d.freed, mapping{base: base, size: size})
 	d.freedBytes += size
+	d.hot += size
 	return errors.Join(d.cool(size), d.evict())
 }
 
-func (d *direct) cool(size int) error {
-	hot := max(1, hotBytes/size)
-	for i := len(d.freed) - 1; i >= 0; i-- {
+func (d *direct) hotBudget(newest int) int {
+	return max(hotBytes, d.liveBytes/liveHotPart, min(newest, hotMapping))
+}
+
+func (d *direct) cool(newest int) error {
+	budget := d.hotBudget(newest)
+	for i := range d.freed {
+		if d.hot <= budget {
+			return nil
+		}
 		m := &d.freed[i]
-		if m.size != size || m.cold {
+		if m.cold {
 			continue
 		}
-		if hot > 0 {
-			hot--
-			continue
-		}
-		if size > osPageSize {
-			if err := osDecommit(unsafe.Add(m.base, osPageSize), size-osPageSize); err != nil {
-				return fmt.Errorf("decommit %d bytes at %#x: %w", size, uintptr(m.base), err)
+		if m.size > osPageSize {
+			if err := osDecommit(unsafe.Add(m.base, osPageSize), m.size-osPageSize); err != nil {
+				return fmt.Errorf("decommit %d bytes at %#x: %w", m.size, uintptr(m.base), err)
 			}
 		}
 		m.cold = true
-		return nil
+		d.hot -= m.size
 	}
 	return nil
 }
@@ -131,6 +142,9 @@ func (d *direct) evict() error {
 	n := 0
 	for n < len(d.freed)-1 && d.freedBytes > d.peak+retainSlack {
 		d.freedBytes -= d.freed[n].size
+		if !d.freed[n].cold {
+			d.hot -= d.freed[n].size
+		}
 		n++
 	}
 	errs := make([]error, 0, n)
@@ -153,7 +167,7 @@ func (d *direct) trim() error {
 	for _, m := range d.freed {
 		errs = append(errs, unmap(m.base, m.size))
 	}
-	d.freed, d.freedBytes = nil, 0
+	d.freed, d.freedBytes, d.hot = nil, 0, 0
 	return errors.Join(errs...)
 }
 

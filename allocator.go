@@ -126,11 +126,15 @@ func (l *Local) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, er
 			l.admit(base, reserved, oldSize)
 			return nil, err
 		}
-		return l.admit(moved, modernc.UnsafeUsableSize(moved), size), nil
+		q := l.admit(moved, modernc.UnsafeUsableSize(moved), size)
+		clearFrom(q, oldSize, size)
+		return q, nil
 	}
 	if isDirect(oldTotal) && isDirect(total) {
 		if rounded, err := pageRound(total); err == nil && rounded == reserved {
-			return l.admit(base, reserved, size), nil
+			q := l.admit(base, reserved, size)
+			clearFrom(q, oldSize, size)
+			return q, nil
 		}
 	}
 	moved, movedReserved, err := l.acquire(total)
@@ -142,6 +146,12 @@ func (l *Local) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, er
 	copy(unsafe.Slice((*byte)(unsafe.Add(moved, headerSize)), n), unsafe.Slice((*byte)(p), n))
 	q := l.admit(moved, movedReserved, size)
 	return q, l.release(base, oldTotal)
+}
+
+func clearFrom(p unsafe.Pointer, from, to int) {
+	if to > from {
+		clear(unsafe.Slice((*byte)(unsafe.Add(p, from)), to-from))
+	}
 }
 
 func (l *Local) free(p unsafe.Pointer, size int) error {

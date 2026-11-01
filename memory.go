@@ -130,11 +130,7 @@ func ResizeSlice[T any](a Allocator, s Slice[T], n int) (Slice[T], error) {
 	if p == nil {
 		return s, err
 	}
-	r := Slice[T]{p: (*T)(p), n: n}
-	if n > s.n {
-		clear(r.Elems()[s.n:])
-	}
-	return r, err
+	return Slice[T]{p: (*T)(p), n: n}, err
 }
 
 // FreeSlice releases s. Freeing the empty Slice does nothing. Freeing s twice,

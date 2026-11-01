@@ -14,8 +14,4 @@ func osMap(size int) (unsafe.Pointer, error) {
 
 func osUnmap(p unsafe.Pointer, size int) error { return unix.MunmapPtr(p, uintptr(size)) }
 
-func osDecommit(p unsafe.Pointer, size int) error {
-	return unix.Madvise(unsafe.Slice((*byte)(p), size), unix.MADV_DONTNEED)
-}
-
 func osRecommit(unsafe.Pointer, int) error { return nil }

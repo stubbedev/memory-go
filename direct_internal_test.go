@@ -90,3 +90,33 @@ func TestDirectEvictsOldestBeyondBudget(t *testing.T) {
 		t.Fatal("oldest mapping survived eviction")
 	}
 }
+
+func TestDirectKeepsOldDoublingsOutOfCommittedMemory(t *testing.T) {
+	t.Parallel()
+
+	var d direct
+	t.Cleanup(func() {
+		if err := d.close(); err != nil {
+			t.Error(err)
+		}
+	})
+	size := 1 << 20
+	base, _, err := d.alloc(size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for size < 512<<20 {
+		size *= 2
+		next, _, err := d.alloc(size)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.free(base); err != nil {
+			t.Fatal(err)
+		}
+		base = next
+	}
+	if limit := d.liveBytes / liveHotPart; d.hot > limit {
+		t.Fatalf("%d retired bytes committed behind %d live, want at most %d", d.hot, d.liveBytes, limit)
+	}
+}
