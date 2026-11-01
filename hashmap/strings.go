@@ -7,6 +7,7 @@ import (
 	"unsafe"
 
 	memory "github.com/stubbedev/memory-go"
+	"github.com/stubbedev/memory-go/internal/seq"
 	"github.com/stubbedev/memory-go/internal/swiss"
 )
 
@@ -50,6 +51,11 @@ func (m *Strings[V]) Get(key string) (V, bool) {
 	}
 	var zero V
 	return zero, false
+}
+
+// Contains reports whether key is present.
+func (m *Strings[V]) Contains(key string) bool {
+	return m.find(key, maphash.String(m.seed, key)) != nil
 }
 
 // GetBytes is Get for a key held as bytes, without converting it to a string.
@@ -109,13 +115,29 @@ func (m *Strings[V]) All() iter.Seq2[string, V] {
 	}
 }
 
-// Free releases the keys and entries. m must not be used afterwards.
-func (m *Strings[V]) Free() error {
+// Keys yields every key, under the same rules as All.
+func (m *Strings[V]) Keys() iter.Seq[string] { return seq.Keys(m.All()) }
+
+// Values yields every value, under the same rules as All.
+func (m *Strings[V]) Values() iter.Seq[V] { return seq.Values(m.All()) }
+
+// Clear removes every entry, releasing the keys and keeping the table's memory.
+func (m *Strings[V]) Clear() error {
+	err := m.freeKeys()
+	m.table.Clear()
+	return err
+}
+
+func (m *Strings[V]) freeKeys() error {
 	var errs []error
 	m.table.All("hashmap", func(s *stringSlot[V]) bool {
 		errs = append(errs, memory.FreeString(m.alloc, s.key))
 		return true
 	})
-	errs = append(errs, m.table.Free())
 	return errors.Join(errs...)
+}
+
+// Free releases the keys and entries. m must not be used afterwards.
+func (m *Strings[V]) Free() error {
+	return errors.Join(m.freeKeys(), m.table.Free())
 }

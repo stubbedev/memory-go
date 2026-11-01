@@ -30,7 +30,10 @@ var (
 	pkgPath     = reflect.TypeFor[Stats]().PkgPath()
 	verdictsMu  sync.Mutex
 	verdicts    atomic.Pointer[map[uintptr]error]
+	cleanTypes  [64]atomic.Uintptr
 )
+
+const typeKeyShift = 5
 
 func typeKey[T any]() uintptr {
 	var probe any = (*T)(nil)
@@ -39,6 +42,18 @@ func typeKey[T any]() uintptr {
 
 func checkType[T any]() error {
 	key := typeKey[T]()
+	entry := &cleanTypes[(key>>typeKeyShift)%uintptr(len(cleanTypes))]
+	if entry.Load() == key {
+		return nil
+	}
+	err := slowCheckType[T](key)
+	if err == nil {
+		entry.Store(key)
+	}
+	return err
+}
+
+func slowCheckType[T any](key uintptr) error {
 	if m := verdicts.Load(); m != nil {
 		if err, ok := (*m)[key]; ok {
 			return err

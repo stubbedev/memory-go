@@ -5,6 +5,7 @@ import (
 	"iter"
 
 	memory "github.com/stubbedev/memory-go"
+	"github.com/stubbedev/memory-go/internal/seq"
 )
 
 // Vector is a growable sequence of off-heap Ts. It is not safe for concurrent
@@ -179,6 +180,9 @@ func (v *Vector[T]) All() iter.Seq2[int, T] {
 		}
 	}
 }
+
+// Values yields each element in order.
+func (v *Vector[T]) Values() iter.Seq[T] { return seq.Values(v.All()) }
 
 // Free releases the elements and leaves v empty. A Vector from NewStable must
 // not be used afterwards.

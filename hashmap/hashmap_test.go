@@ -381,3 +381,126 @@ func BenchmarkLookupLoop16M(b *testing.B)    { benchLookups(b, 16<<20, false) }
 func BenchmarkLookupGetMany16M(b *testing.B) { benchLookups(b, 16<<20, true) }
 func BenchmarkLookupLoop64K(b *testing.B)    { benchLookups(b, 64<<10, false) }
 func BenchmarkLookupGetMany64K(b *testing.B) { benchLookups(b, 64<<10, true) }
+
+func TestGetOrSetAndUpsert(t *testing.T) {
+	t.Parallel()
+
+	m, err := hashmap.New[string2, int](memtest.Local(t), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Free()
+	key := string2{1, 2}
+	got, loaded, err := m.GetOrSet(key, 5)
+	if err != nil || loaded || got != 5 {
+		t.Fatalf("GetOrSet on absent key = %d, %v, %v", got, loaded, err)
+	}
+	got, loaded, err = m.GetOrSet(key, 6)
+	if err != nil || !loaded || got != 5 {
+		t.Fatalf("GetOrSet on present key = %d, %v, %v", got, loaded, err)
+	}
+	add := func(old int, found bool) int {
+		if found {
+			return old + 10
+		}
+		return 1
+	}
+	if err := m.Upsert(key, add); err != nil {
+		t.Fatal(err)
+	}
+	other := string2{3, 4}
+	if err := m.Upsert(other, add); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := m.Get(key); v != 15 {
+		t.Fatalf("after Upsert of a present key = %d", v)
+	}
+	if v, _ := m.Get(other); v != 1 {
+		t.Fatalf("after Upsert of an absent key = %d", v)
+	}
+	if !m.Contains(key) || m.Contains(string2{9, 9}) {
+		t.Fatal("Contains is wrong")
+	}
+}
+
+func TestClearEmptiesAndStaysUsable(t *testing.T) {
+	t.Parallel()
+
+	m, err := hashmap.NewHashed[uint64, uint64](memtest.Local(t), 0, hashmap.Int[uint64])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Free()
+	for i := range uint64(1000) {
+		if err := m.Set(i, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range uint64(500) {
+		m.Delete(i)
+	}
+	m.Clear()
+	if m.Len() != 0 || m.Contains(600) {
+		t.Fatalf("Len after Clear = %d", m.Len())
+	}
+	for range m.All() {
+		t.Fatal("All yielded after Clear")
+	}
+	for i := range uint64(2000) {
+		if err := m.Set(i, i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range uint64(2000) {
+		if v, ok := m.Get(i); !ok || v != i+1 {
+			t.Fatalf("Get(%d) = %d, %v", i, v, ok)
+		}
+	}
+}
+
+func TestStringsClearKeysValuesContains(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	m, err := hashmap.NewStrings[int](a, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Free()
+	want := map[string]int{"a": 1, "b": 2, "c": 3}
+	for k, v := range want {
+		if err := m.Set(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !m.Contains("a") || m.Contains("z") {
+		t.Fatal("Contains is wrong")
+	}
+	keys, sum := 0, 0
+	for k := range m.Keys() {
+		if _, ok := want[k]; !ok {
+			t.Fatalf("Keys yielded %q", k)
+		}
+		keys++
+	}
+	for v := range m.Values() {
+		sum += v
+	}
+	if keys != 3 || sum != 6 {
+		t.Fatalf("Keys saw %d, Values summed to %d", keys, sum)
+	}
+	if err := m.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	if m.Len() != 0 || m.Contains("a") {
+		t.Fatal("not empty after Clear")
+	}
+	if err := m.Set("a", 9); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := m.Get("a"); !ok || v != 9 {
+		t.Fatalf("Get after Clear = %d, %v", v, ok)
+	}
+}
+
+type string2 struct{ A, B int }

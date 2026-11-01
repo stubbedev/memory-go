@@ -331,3 +331,16 @@ func TestFromCopies(t *testing.T) {
 		t.Fatalf("Slice = %v", v.Slice())
 	}
 }
+
+func TestValuesYieldsInOrder(t *testing.T) {
+	t.Parallel()
+
+	v, err := vector.From(memtest.Local(t), []int{4, 5, 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Free()
+	if got := slices.Collect(v.Values()); !slices.Equal(got, []int{4, 5, 6}) {
+		t.Fatalf("Values = %v", got)
+	}
+}

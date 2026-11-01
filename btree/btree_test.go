@@ -209,3 +209,111 @@ func BenchmarkSetGetDelete(b *testing.B) {
 		i++
 	}
 }
+
+func filled(t *testing.T, n int) *btree.Tree[int, int] {
+	t.Helper()
+	tree, err := btree.New[int, int](memtest.Local(t), cmp.Compare[int])
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := tree.Free(); err != nil {
+			t.Error(err)
+		}
+	})
+	for i := range n {
+		if err := tree.Set(i*2, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return tree
+}
+
+func TestRangeIsHalfOpen(t *testing.T) {
+	t.Parallel()
+
+	tree := filled(t, 1000)
+	var got []int
+	for k := range tree.Range(101, 111) {
+		got = append(got, k)
+	}
+	if !slices.Equal(got, []int{102, 104, 106, 108, 110}) {
+		t.Fatalf("Range = %v", got)
+	}
+	for k := range tree.Range(111, 101) {
+		t.Fatalf("empty Range yielded %d", k)
+	}
+	seen := 0
+	for range tree.Range(0, 1<<30) {
+		seen++
+		if seen == 3 {
+			break
+		}
+	}
+	if seen != 3 {
+		t.Fatalf("early exit saw %d", seen)
+	}
+}
+
+func TestBackwardMirrorsAll(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []int{0, 1, 15, 16, 1000} {
+		tree := filled(t, n)
+		var forward, backward []int
+		for k := range tree.All() {
+			forward = append(forward, k)
+		}
+		for k := range tree.Backward() {
+			backward = append(backward, k)
+		}
+		slices.Reverse(backward)
+		if !slices.Equal(forward, backward) {
+			t.Fatalf("n=%d: Backward does not mirror All", n)
+		}
+	}
+	tree := filled(t, 100)
+	for k := range tree.Backward() {
+		if k != 198 {
+			t.Fatalf("first key = %d", k)
+		}
+		break
+	}
+}
+
+func TestKeysAndValuesFollowKeyOrder(t *testing.T) {
+	t.Parallel()
+
+	tree := filled(t, 100)
+	i := 0
+	for k := range tree.Keys() {
+		if k != i*2 {
+			t.Fatalf("key %d = %d", i, k)
+		}
+		i++
+	}
+	i = 0
+	for v := range tree.Values() {
+		if v != i {
+			t.Fatalf("value %d = %d", i, v)
+		}
+		i++
+	}
+	if i != 100 {
+		t.Fatalf("saw %d values", i)
+	}
+}
+
+func TestBackwardPanicsOnModification(t *testing.T) {
+	t.Parallel()
+
+	tree := filled(t, 100)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("modifying during Backward did not panic")
+		}
+	}()
+	for k := range tree.Backward() {
+		tree.Delete(k)
+	}
+}

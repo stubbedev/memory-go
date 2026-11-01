@@ -10,6 +10,7 @@ import (
 	"iter"
 
 	memory "github.com/stubbedev/memory-go"
+	"github.com/stubbedev/memory-go/internal/seq"
 	"github.com/stubbedev/memory-go/pool"
 )
 
@@ -390,12 +391,36 @@ func (t *Tree[K, V]) From(from K) iter.Seq2[K, V] {
 	}
 }
 
-func (t *Tree[K, V]) start(yield func(K, V) bool, from *K) {
-	if t.n == 0 {
-		return
+// Range yields the entries with keys in [from, to), in ascending key order, under the
+// same rules as From.
+func (t *Tree[K, V]) Range(from, to K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		for k, v := range t.From(from) {
+			if t.cmp(k, to) >= 0 || !yield(k, v) {
+				return
+			}
+		}
 	}
+}
+
+// Backward yields every entry in descending key order, under the same rules as All.
+func (t *Tree[K, V]) Backward() iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		if t.n != 0 {
+			t.walkBack(t.root.Value(), t.watched(yield))
+		}
+	}
+}
+
+// Keys yields every key in ascending order, under the same rules as All.
+func (t *Tree[K, V]) Keys() iter.Seq[K] { return seq.Keys(t.All()) }
+
+// Values yields every value in ascending key order, under the same rules as All.
+func (t *Tree[K, V]) Values() iter.Seq[V] { return seq.Values(t.All()) }
+
+func (t *Tree[K, V]) watched(yield func(K, V) bool) func(K, V) bool {
 	mods := t.mods
-	t.walk(t.root.Value(), func(k K, v V) bool {
+	return func(k K, v V) bool {
 		if !yield(k, v) {
 			return false
 		}
@@ -403,7 +428,28 @@ func (t *Tree[K, V]) start(yield func(K, V) bool, from *K) {
 			panic("btree: modified during All")
 		}
 		return true
-	}, from)
+	}
+}
+
+func (t *Tree[K, V]) start(yield func(K, V) bool, from *K) {
+	if t.n != 0 {
+		t.walk(t.root.Value(), t.watched(yield), from)
+	}
+}
+
+func (t *Tree[K, V]) walkBack(x *node[K, V], yield func(K, V) bool) bool {
+	isLeaf := leaf(x)
+	for i := x.n; ; i-- {
+		if !isLeaf && !t.walkBack(child(x, i), yield) {
+			return false
+		}
+		if i == 0 {
+			return true
+		}
+		if !yield(x.keys[i-1], x.vals[i-1]) {
+			return false
+		}
+	}
 }
 
 func (t *Tree[K, V]) walk(x *node[K, V], yield func(K, V) bool, from *K) bool {
