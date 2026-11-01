@@ -126,7 +126,7 @@ func (p *Pool[T]) Put(it Item[T]) {
 	}
 	s := it.r.Value()
 	s.tag.unmark(unsafe.Pointer(s), p.id)
-	*nextOf(s) = p.free
+	*(*uintptr)(unsafe.Pointer(nextOf(s))) = uintptr(unsafe.Pointer(p.free.Value()))
 	p.free = it.r
 	p.n--
 }

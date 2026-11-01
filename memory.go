@@ -171,13 +171,15 @@ func (s Slice[T]) View(from, to int) View[T] {
 }
 
 // NewUninit is New without zeroing: the T holds whatever the memory held. Use
-// it only for a value that is written in full before it is read.
+// it only for a value that is written in full before it is read. A T holding
+// handles is zeroed anyway, because the garbage collector inspects the old value of
+// a handle while it is overwritten and would take stale bytes for a pointer.
 func NewUninit[T any](a Allocator) (Ptr[T], error) {
 	size, err := byteSize[T](1)
 	if err != nil {
 		return Ptr[T]{}, err
 	}
-	p, err := a.alloc(size, alignOf[T](), uninit)
+	p, err := a.alloc(size, alignOf[T](), uninitFill[T]())
 	if err != nil {
 		return Ptr[T]{}, fmt.Errorf("memory: allocate %s: %w", reflect.TypeFor[T](), err)
 	}
@@ -186,9 +188,10 @@ func NewUninit[T any](a Allocator) (Ptr[T], error) {
 
 // MakeSliceUninit is MakeSlice without zeroing: the elements hold whatever the
 // memory held, and a parser or decoder that overwrites them skips paying for
-// the clear. n == 0 returns the empty Slice.
+// the clear. n == 0 returns the empty Slice. A T holding handles is zeroed anyway; see
+// NewUninit.
 func MakeSliceUninit[T any](a Allocator, n int) (Slice[T], error) {
-	return makeSlice[T](a, n, alignOf[T](), uninit)
+	return makeSlice[T](a, n, alignOf[T](), uninitFill[T]())
 }
 
 // MakeSliceAligned allocates n zeroed Ts whose first element's address is a
@@ -201,9 +204,9 @@ func MakeSliceAligned[T any](a Allocator, n, align int) (Slice[T], error) {
 }
 
 // MakeSliceAlignedUninit is MakeSliceAligned without zeroing, for a buffer about to
-// be overwritten.
+// be overwritten. A T holding handles is zeroed anyway; see NewUninit.
 func MakeSliceAlignedUninit[T any](a Allocator, n, align int) (Slice[T], error) {
-	return makeSliceAligned[T](a, n, align, uninit)
+	return makeSliceAligned[T](a, n, align, uninitFill[T]())
 }
 
 func makeSliceAligned[T any](a Allocator, n, align int, f fill) (Slice[T], error) {

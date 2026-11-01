@@ -119,7 +119,11 @@ func classForAligned(size, align int) uint8 {
 	return classFor(1 << bits.Len(uint(max(size, align)-1)))
 }
 
-type freeSlot struct{ next *freeSlot }
+type freeSlot struct{ link uintptr }
+
+func (f *freeSlot) next() *freeSlot { return *(**freeSlot)(unsafe.Pointer(&f.link)) }
+
+func (f *freeSlot) setNext(next *freeSlot) { f.link = uintptr(unsafe.Pointer(next)) }
 
 type span struct {
 	free         *freeSlot
@@ -176,7 +180,7 @@ func (h *heap) alloc(size int, c uint8, f fill) (unsafe.Pointer, error) {
 	var p unsafe.Pointer
 	dirty := true
 	if slot := s.free; slot != nil {
-		s.free = slot.next
+		s.free = slot.next()
 		p = unsafe.Pointer(slot)
 	} else {
 		off := s.data + s.carved*s.slot
@@ -301,7 +305,7 @@ func (h *heap) pushRemote(p unsafe.Pointer) {
 	slot := (*freeSlot)(p)
 	for {
 		head := h.remote.Load()
-		slot.next = head
+		slot.setNext(head)
 		if h.remote.CompareAndSwap(head, slot) {
 			return
 		}
@@ -311,7 +315,7 @@ func (h *heap) pushRemote(p unsafe.Pointer) {
 func (h *heap) drain() error {
 	var errs []error
 	for slot := h.remote.Swap(nil); slot != nil; {
-		next := slot.next
+		next := slot.next()
 		if err := h.reclaim(spanOf(unsafe.Pointer(slot)), unsafe.Pointer(slot)); err != nil {
 			errs = append(errs, err)
 		}
@@ -322,7 +326,7 @@ func (h *heap) drain() error {
 
 func (h *heap) reclaim(s *span, p unsafe.Pointer) error {
 	slot := (*freeSlot)(p)
-	slot.next = s.free
+	slot.setNext(s.free)
 	s.free = slot
 	s.used--
 	h.stats.Live--

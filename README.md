@@ -108,7 +108,8 @@ An allocation of up to 8 KiB takes a slot from a size class, four to a doubling,
 so rounding wastes at most a quarter. Slots of a power-of-two size are aligned to
 it, up to 4 KiB. `MakeSliceAligned` asks for an alignment, and `NewUninit`,
 `MakeSliceUninit`, `MakeSliceAlignedUninit` and `Pool.GetUninit` skip zeroing a value
-about to be overwritten. `NewFrom` and `SliceFrom` allocate and copy in one call.
+about to be overwritten, except that a new value of a type holding handles is always
+zeroed: the collector inspects the old contents of a handle as it is overwritten. `NewFrom` and `SliceFrom` allocate and copy in one call.
 
 Anything larger gets its own mapping rounded up to whole OS pages, starting on a
 page: a 1024×1024 RGBA buffer (4 MiB) reserves 4 MiB plus at most one page.

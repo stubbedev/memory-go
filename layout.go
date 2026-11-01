@@ -31,6 +31,7 @@ var (
 	verdictsMu  sync.Mutex
 	verdicts    atomic.Pointer[map[uintptr]error]
 	cleanTypes  [64]atomic.Uintptr
+	uninitFills [64]atomic.Uintptr
 )
 
 const typeKeyShift = 5
@@ -77,6 +78,46 @@ func recordVerdict(t reflect.Type, key uintptr) error {
 	next[key] = verdict(t)
 	verdicts.Store(&next)
 	return next[key]
+}
+
+const needsZeroing = 1
+
+func uninitFill[T any]() fill {
+	key := typeKey[T]()
+	entry := &uninitFills[(key>>typeKeyShift)%uintptr(len(uninitFills))]
+	switch entry.Load() {
+	case key:
+		return uninit
+	case key | needsZeroing:
+		return zeroed
+	}
+	if holdsPointerWords(reflect.TypeFor[T]()) {
+		entry.Store(key | needsZeroing)
+		return zeroed
+	}
+	entry.Store(key)
+	return uninit
+}
+
+func holdsPointerWords(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128:
+		return false
+	case reflect.Array:
+		return t.Len() > 0 && holdsPointerWords(t.Elem())
+	case reflect.Struct:
+		for f := range t.Fields() {
+			if holdsPointerWords(f.Type) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
 }
 
 func verdict(t reflect.Type) error {
