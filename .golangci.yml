@@ -45,7 +45,16 @@ linters:
           - gosec
           - unparam
       # These files are the audited boundary between typed values and raw memory.
-      - path: ^(allocator|direct|direct_unix|direct_windows|guard|guard_unchecked|layout|memory|string)\.go$
+      - path: ^(allocator|arena|direct|direct_bsd|direct_linux|direct_unix|direct_windows|guard|guard_unchecked|layout|memory|populate|profile|region|span|string)\.go$
+        linters:
+          - gosec
+        text: G103
+      # Sizes and offsets here are bounded by the span and class constants.
+      - path: ^(allocator|arena|guard|span|internal/swiss/swiss)\.go$
+        linters:
+          - gosec
+        text: G115
+      - path: ^(hashmap/strings|intern/intern|pool/pool|pool/tag|pool/tag_unchecked)\.go$
         linters:
           - gosec
         text: G103

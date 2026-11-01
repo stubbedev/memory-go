@@ -118,3 +118,111 @@ func TestIndexOutOfRangePanics(t *testing.T) {
 	}()
 	v.At(0)
 }
+
+func TestStableVectorKeepsPointersValid(t *testing.T) {
+	t.Parallel()
+
+	v, err := vector.NewStable[uint64](1 << 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := v.Free(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := v.Push(7); err != nil {
+		t.Fatal(err)
+	}
+	first := v.Ptr(0)
+	for i := range 1 << 22 {
+		if err := v.Push(uint64(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if first != v.Ptr(0) || *first != 7 {
+		t.Fatal("growing moved the first element")
+	}
+	if got := v.At(v.Len() - 1); got != 1<<22-1 {
+		t.Fatalf("last = %d", got)
+	}
+	v.Truncate(10)
+	if err := v.Clip(); err != nil {
+		t.Fatal(err)
+	}
+	if v.Cap() != 10 || first != v.Ptr(0) {
+		t.Fatalf("Clip: cap %d", v.Cap())
+	}
+	if err := v.Push(1); err != nil {
+		t.Fatal(err)
+	}
+	if got := v.At(10); got != 1 {
+		t.Fatalf("v[10] = %d", got)
+	}
+}
+
+func TestStableVectorStopsAtItsLimit(t *testing.T) {
+	t.Parallel()
+
+	v, err := vector.NewStable[uint64](5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Free()
+	for i := range 5 {
+		if err := v.Push(uint64(i)); err != nil {
+			t.Fatalf("push %d: %v", i, err)
+		}
+	}
+	if err := v.Push(5); !errors.Is(err, memory.ErrRegionFull) {
+		t.Fatalf("err = %v, want ErrRegionFull", err)
+	}
+}
+
+func TestAppendMatchesPush(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	v, err := vector.New[int](a, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Free()
+	want := make([]int, 0, 1000)
+	for i := range 100 {
+		chunk := make([]int, i)
+		for j := range chunk {
+			chunk[j] = i*100 + j
+		}
+		if err := v.Append(chunk...); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, chunk...)
+	}
+	if !slices.Equal(v.Slice(), want) {
+		t.Fatal("Append differs from a Go slice")
+	}
+	if err := v.Append(); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != len(want) {
+		t.Fatalf("Len = %d", v.Len())
+	}
+}
+
+func BenchmarkAppend(b *testing.B) {
+	a := memtest.Local(b)
+	v, err := vector.New[uint64](a, 1<<16)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer v.Free()
+	src := make([]uint64, 1<<16)
+	for b.Loop() {
+		v.Truncate(0)
+		if err := v.Append(src...); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.SetBytes(1 << 19)
+}

@@ -1,22 +1,26 @@
 // Package linkedlist provides a doubly linked list whose nodes live off the Go
-// heap in one contiguous pool and link to each other by index. Removed nodes
-// are reused by later insertions.
+// heap in one contiguous pool and link to each other by 32-bit index, so links
+// cost eight bytes per node. Removed nodes are reused by later insertions.
 package linkedlist
 
 import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 
 	memory "github.com/stubbedev/memory-go"
 	"github.com/stubbedev/memory-go/vector"
 )
 
-type link int
+type link uint32
 
-const none link = 0
+const (
+	none     link = 0
+	maxNodes      = math.MaxUint32 - 1
+)
 
-func linkTo(i int) link { return link(i + 1) }
+func linkTo(i int) link { return link(i + 1) } //nolint:gosec // acquire bounds the node count
 
 func (l link) index() int { return int(l) - 1 }
 
@@ -57,6 +61,9 @@ func (l *List[T]) acquire(value T) (link, error) {
 		l.spare = l.node(at).next
 		*l.node(at) = node[T]{value: value}
 		return at, nil
+	}
+	if int64(l.nodes.Len()) >= maxNodes {
+		return none, fmt.Errorf("linkedlist: %d nodes: %w", l.nodes.Len(), memory.ErrTooLarge)
 	}
 	if err := l.nodes.Push(node[T]{value: value}); err != nil {
 		return none, err

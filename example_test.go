@@ -82,3 +82,46 @@ func Example_linkedValues() {
 	fmt.Println()
 	// Output: a b c
 }
+
+func ExampleArena() {
+	var parent memory.Local
+	defer parent.Close()
+
+	a, err := memory.NewArena(&parent)
+	if err != nil {
+		panic(err)
+	}
+	for request := range 2 {
+		name, err := memory.NewString(a, "request")
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(name.String(), request)
+		if err := a.Reset(); err != nil {
+			panic(err)
+		}
+	}
+	// Output:
+	// request 0
+	// request 1
+}
+
+func ExampleRegion() {
+	r, err := memory.NewRegion[int64](1 << 30)
+	if err != nil {
+		panic(err)
+	}
+	defer r.Close()
+
+	i, err := r.Grow(1)
+	if err != nil {
+		panic(err)
+	}
+	first := r.Ptr(i)
+	*first = 42
+	if _, err := r.Grow(1 << 20); err != nil {
+		panic(err)
+	}
+	fmt.Println(*first, r.Len())
+	// Output: 42 1048577
+}

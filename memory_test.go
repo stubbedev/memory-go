@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unsafe"
 
 	memory "github.com/stubbedev/memory-go"
 	"github.com/stubbedev/memory-go/internal/memtest"
@@ -333,5 +334,75 @@ var sink *point
 func BenchmarkGoNew(b *testing.B) {
 	for b.Loop() {
 		sink = new(point)
+	}
+}
+
+func TestUninitAndAligned(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	p, err := memory.NewUninit[point](a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := memory.MakeSliceUninit[byte](a, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Len() != 100 {
+		t.Fatalf("Len = %d", s.Len())
+	}
+	if err := errors.Join(memory.Free(a, p), memory.FreeSlice(a, s)); err != nil {
+		t.Fatal(err)
+	}
+	for _, align := range []int{1, 8, 16, 64, 256, 4096} {
+		for _, n := range []int{1, 100, 4096, 8192, 8193, 1 << 20} {
+			got, err := memory.MakeSliceAligned[byte](a, n, align)
+			if err != nil {
+				t.Fatal(err)
+			}
+			addr := uintptr(unsafe.Pointer(&got.Elems()[0]))
+			if addr%uintptr(align) != 0 {
+				t.Fatalf("n=%d align=%d: address %#x", n, align, addr)
+			}
+			for i, v := range got.Elems() {
+				if v != 0 {
+					t.Fatalf("n=%d: element %d not zero", n, i)
+				}
+			}
+			clear(got.Elems())
+			if err := memory.FreeSlice(a, got); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, align := range []int{0, 3, -8, 8192} {
+		if _, err := memory.MakeSliceAligned[byte](a, 8, align); !errors.Is(err, memory.ErrAlignment) {
+			t.Fatalf("align %d: err = %v", align, err)
+		}
+	}
+}
+
+func TestViewAliasesSlice(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	s, err := memory.MakeSlice[int32](a, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := s.View(2, 5)
+	if v.Len() != 3 || cap(v.Elems()) != 3 {
+		t.Fatalf("Len = %d, cap = %d", v.Len(), cap(v.Elems()))
+	}
+	v.Elems()[0] = 9
+	if s.Elems()[2] != 9 {
+		t.Fatal("View does not alias the Slice")
+	}
+	if empty := s.View(3, 3); empty.Len() != 0 || len(empty.Elems()) != 0 {
+		t.Fatal("empty View is not empty")
+	}
+	if err := memory.FreeSlice(a, s); err != nil {
+		t.Fatal(err)
 	}
 }

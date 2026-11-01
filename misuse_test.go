@@ -167,3 +167,34 @@ func TestAppendStringInvalidatesOldString(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestArenaHandlesPanicAfterReset(t *testing.T) {
+	t.Parallel()
+
+	a, err := memory.NewArena(memtest.Local(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Free()
+	p, err := memory.New[point](a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Value() == nil {
+		t.Fatal("nil value")
+	}
+	if err := a.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	mustPanic(t, "after it was freed", func() { p.Value() })
+	other, err := memory.NewArena(memtest.Local(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Free()
+	q, err := memory.New[point](a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustPanic(t, "belongs to a different allocator", func() { _ = memory.Free(other, q) })
+}

@@ -17,7 +17,7 @@ func TestDirectRetentionStaysWithinBudget(t *testing.T) {
 	const size = 1 << 20
 	bases := make([]unsafe.Pointer, 0, 32)
 	for range 32 {
-		base, reserved, err := d.alloc(size)
+		base, reserved, err := d.alloc(size, zeroed)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,7 +67,7 @@ func TestDirectEvictsOldestBeyondBudget(t *testing.T) {
 		}
 	})
 	const size = 8 << 20
-	first, _, err := d.alloc(size)
+	first, _, err := d.alloc(size, zeroed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestDirectEvictsOldestBeyondBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 4 {
-		base, _, err := d.alloc(size + osPageSize)
+		base, _, err := d.alloc(size+osPageSize, zeroed)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -88,5 +88,35 @@ func TestDirectEvictsOldestBeyondBudget(t *testing.T) {
 	}
 	if d.freed[0].base == first {
 		t.Fatal("oldest mapping survived eviction")
+	}
+}
+
+func TestDirectKeepsOldDoublingsOutOfCommittedMemory(t *testing.T) {
+	t.Parallel()
+
+	var d direct
+	t.Cleanup(func() {
+		if err := d.close(); err != nil {
+			t.Error(err)
+		}
+	})
+	size := 1 << 20
+	base, _, err := d.alloc(size, zeroed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for size < 512<<20 {
+		size *= 2
+		next, _, err := d.alloc(size, zeroed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.free(base); err != nil {
+			t.Fatal(err)
+		}
+		base = next
+	}
+	if limit := d.liveBytes / liveHotPart; d.hot > limit {
+		t.Fatalf("%d retired bytes committed behind %d live, want at most %d", d.hot, d.liveBytes, limit)
 	}
 }

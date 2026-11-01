@@ -37,6 +37,9 @@ build:
 fuzz time="30s":
     go test ./vector -run='^$' -fuzz='^FuzzMatchesSlice$' -fuzztime={{time}}
     go test ./hashmap -run='^$' -fuzz='^FuzzMatchesMap$' -fuzztime={{time}}
+    go test ./hashmap -run='^$' -fuzz='^FuzzStringsMatchesMap$' -fuzztime={{time}}
+    go test ./btree -run='^$' -fuzz='^FuzzMatchesModel$' -fuzztime={{time}}
+    go test ./intern -run='^$' -fuzz='^FuzzMatchesModel$' -fuzztime={{time}}
     go test ./linkedlist -run='^$' -fuzz='^FuzzMatchesSlice$' -fuzztime={{time}}
     go test ./minheap -run='^$' -fuzz='^FuzzMatchesSortedSlice$' -fuzztime={{time}}
     go test ./pool -run='^$' -fuzz='^FuzzMatchesModel$' -fuzztime={{time}}

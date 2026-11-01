@@ -140,3 +140,93 @@ func TestPutZeroItemPanics(t *testing.T) {
 	}()
 	p.Put(pool.Item[int]{})
 }
+
+func TestSlotOverhead(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	const chunk = 1 << 16
+	p, err := pool.New[[3]uint64](a, chunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Free()
+	perValue := a.Stats().Bytes / chunk
+	want := 24
+	if memory.Checked {
+		want += 8
+	}
+	if perValue != want {
+		t.Fatalf("%d bytes per 24-byte value, want %d", perValue, want)
+	}
+}
+
+func TestSmallTypesRecycle(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	p, err := pool.New[uint8](a, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Free()
+	items := make([]pool.Item[uint8], 0, 32)
+	for i := range 32 {
+		it, err := p.Get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if *it.Value() != 0 {
+			t.Fatalf("item %d not zeroed", i)
+		}
+		*it.Value() = 0xff
+		items = append(items, it)
+	}
+	for _, it := range items {
+		if *it.Value() != 0xff {
+			t.Fatal("neighbouring item overwritten")
+		}
+		p.Put(it)
+	}
+	for range 32 {
+		it, err := p.Get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if *it.Value() != 0 {
+			t.Fatal("recycled item not zeroed")
+		}
+	}
+}
+
+func TestZeroSizeTypeRejected(t *testing.T) {
+	t.Parallel()
+
+	if _, err := pool.New[struct{}](memtest.Local(t), 4); !errors.Is(err, pool.ErrZeroSize) {
+		t.Fatalf("err = %v, want ErrZeroSize", err)
+	}
+}
+
+func TestGetUninitReusesWithoutClearing(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	p, err := pool.New[[2]uint64](a, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Free()
+	it, err := p.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	*it.Value() = [2]uint64{1, 2}
+	p.Put(it)
+	again, err := p.GetUninit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Value()[1] != 2 {
+		t.Fatalf("value = %v, want its second word kept", *again.Value())
+	}
+}

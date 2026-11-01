@@ -57,3 +57,13 @@ func (o *Ops) Int(n int) int { return int(binary.LittleEndian.Uint16(o.take(2)))
 
 // Uint64 returns the next eight bytes as a value.
 func (o *Ops) Uint64() uint64 { return binary.LittleEndian.Uint64(o.take(8)) }
+
+// ReportRSS reports how many bytes of resident memory the process gained since
+// baseline, from Resident, as a benchmark metric. It reports nothing where
+// Resident is unavailable.
+func ReportRSS(b *testing.B, baseline int64) {
+	b.Helper()
+	if now := Resident(); now > 0 {
+		b.ReportMetric(float64(now-baseline), "rss-bytes")
+	}
+}
