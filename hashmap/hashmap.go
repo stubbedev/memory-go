@@ -1,27 +1,40 @@
-// Package hashmap provides a hash map whose entries live off the Go heap.
+// Package hashmap provides hash maps whose entries live off the Go heap.
 //
-// It uses open addressing with linear probing and backward-shift deletion,
-// hashing keys with hash/maphash. Each slot stores its key's hash, so probes
-// compare hashes before keys and resizing never rehashes.
+// Map is keyed by any comparable pointer-free type, and Strings by text. Both
+// use a Swiss table: groups of eight slots with one control byte each, so a
+// u64-to-u64 map costs 17 bytes per slot at up to 7/8 load. Keys hash with
+// hash/maphash unless a Map is given a faster Hasher.
 package hashmap
 
 import (
-	"fmt"
 	"hash/maphash"
 	"iter"
-	"math"
 	"math/bits"
+	"math/rand/v2"
 
 	memory "github.com/stubbedev/memory-go"
+	"github.com/stubbedev/memory-go/internal/swiss"
 )
 
-const (
-	minLog   = 3
-	occupied = 1 << 63
-)
+const fold = 0x9e3779b97f4a7c15
+
+// Integer is the set of key types Int hashes.
+type Integer interface {
+	~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr
+}
+
+// Hasher hashes a key under a seed chosen per Map. Equal keys must hash equal.
+type Hasher[K any] func(seed uint64, key K) uint64
+
+// Int is a Hasher for integer keys, about five times faster than the default.
+// It is not collision resistant, so an attacker who controls keys and learns
+// the seed could degrade a Map; use the default for untrusted keys.
+func Int[K Integer](seed uint64, key K) uint64 {
+	hi, lo := bits.Mul64(uint64(key)^seed, fold) //nolint:gosec // only the bit pattern matters
+	return hi ^ lo
+}
 
 type slot[K comparable, V any] struct {
-	hash  uint64
 	key   K
 	value V
 }
@@ -30,62 +43,43 @@ type slot[K comparable, V any] struct {
 // Iteration order is unspecified. Pointers into it are valid until the next
 // call that may grow or shrink it.
 type Map[K comparable, V any] struct {
-	alloc memory.Allocator
-	seed  maphash.Seed
-	slots memory.Slice[slot[K, V]]
-	mask  uint64
-	n     int
-	mods  uint
+	table *swiss.Table[slot[K, V]]
+	hash  func(K) uint64
 }
 
-// New returns an empty Map with room for capacity entries.
+// New returns an empty Map with room for capacity entries, hashing with
+// hash/maphash.
 func New[K comparable, V any](a memory.Allocator, capacity int) (*Map[K, V], error) {
-	log, err := slotsLog(capacity)
+	seed := maphash.MakeSeed()
+	return build[K, V](a, capacity, func(key K) uint64 { return maphash.Comparable(seed, key) })
+}
+
+// NewHashed returns an empty Map with room for capacity entries, hashing with h
+// under a random seed.
+func NewHashed[K comparable, V any](a memory.Allocator, capacity int, h Hasher[K]) (*Map[K, V], error) {
+	seed := rand.Uint64() //nolint:gosec // resists accidental clustering, not attackers; see Int
+	return build[K, V](a, capacity, func(key K) uint64 { return h(seed, key) })
+}
+
+func build[K comparable, V any](a memory.Allocator, capacity int, hash func(K) uint64) (*Map[K, V], error) {
+	table, err := swiss.New(a, capacity, func(s *slot[K, V]) uint64 { return hash(s.key) })
 	if err != nil {
 		return nil, err
 	}
-	m := &Map[K, V]{alloc: a, seed: maphash.MakeSeed()}
-	if err := m.rehash(log); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-func slotsLog(entries int) (int, error) {
-	switch {
-	case entries < 0:
-		return 0, fmt.Errorf("hashmap: capacity %d: %w", entries, memory.ErrNegativeLen)
-	case entries > math.MaxInt/4:
-		return 0, fmt.Errorf("hashmap: capacity %d: %w", entries, memory.ErrTooLarge)
-	}
-	need := (4*entries + 2) / 3
-	if need <= 1<<minLog {
-		return minLog, nil
-	}
-	return bits.Len(uint(need - 1)), nil
+	return &Map[K, V]{table: table, hash: hash}, nil
 }
 
 // Len returns the number of entries.
-func (m *Map[K, V]) Len() int { return m.n }
+func (m *Map[K, V]) Len() int { return m.table.Len() }
 
-func (m *Map[K, V]) hash(key K) uint64 { return maphash.Comparable(m.seed, key) | occupied }
-
-func (m *Map[K, V]) find(key K, h uint64) (uint64, bool) {
-	s := m.slots.Elems()
-	i := h & m.mask
-	for s[i].hash != 0 {
-		if s[i].hash == h && s[i].key == key {
-			return i, true
-		}
-		i = (i + 1) & m.mask
-	}
-	return i, false
+func (m *Map[K, V]) find(key K, h uint64) *slot[K, V] {
+	return m.table.Find(h, func(s *slot[K, V]) bool { return s.key == key })
 }
 
 // Get returns the value for key, or reports false if key is absent.
 func (m *Map[K, V]) Get(key K) (V, bool) {
-	if p, ok := m.Ptr(key); ok {
-		return *p, true
+	if s := m.find(key, m.hash(key)); s != nil {
+		return s.value, true
 	}
 	var zero V
 	return zero, false
@@ -94,100 +88,41 @@ func (m *Map[K, V]) Get(key K) (V, bool) {
 // Ptr returns a pointer to the value for key, or reports false if key is
 // absent.
 func (m *Map[K, V]) Ptr(key K) (*V, bool) {
-	i, ok := m.find(key, m.hash(key))
-	if !ok {
+	s := m.find(key, m.hash(key))
+	if s == nil {
 		return nil, false
 	}
-	return &m.slots.Elems()[i].value, true
+	return &s.value, true
 }
 
 // Set stores value under key.
 func (m *Map[K, V]) Set(key K, value V) error {
 	h := m.hash(key)
-	i, ok := m.find(key, h)
-	if !ok && 4*(m.n+1) > 3*m.slots.Len() {
-		if err := m.rehash(bits.Len64(m.mask) + 1); err != nil {
+	s := m.find(key, h)
+	if s == nil {
+		var err error
+		if s, err = m.table.Insert(h); err != nil {
 			return err
 		}
-		i, _ = m.find(key, h)
 	}
-	if !ok {
-		m.n++
-		m.mods++
-	}
-	m.slots.Elems()[i] = slot[K, V]{hash: h, key: key, value: value}
+	*s = slot[K, V]{key: key, value: value}
 	return nil
 }
 
 // Clip shrinks the table to the smallest size that holds the current entries.
-func (m *Map[K, V]) Clip() error {
-	log, err := slotsLog(m.n)
-	if err != nil {
-		return err
-	}
-	if log >= bits.Len64(m.mask) {
-		return nil
-	}
-	return m.rehash(log)
-}
-
-func (m *Map[K, V]) rehash(log int) error {
-	slots, err := memory.MakeSlice[slot[K, V]](m.alloc, 1<<log)
-	if err != nil {
-		return err
-	}
-	old := m.slots
-	m.slots, m.mask = slots, uint64(1)<<log-1
-	m.mods++
-	s := slots.Elems()
-	for _, e := range old.Elems() {
-		if e.hash == 0 {
-			continue
-		}
-		i := e.hash & m.mask
-		for s[i].hash != 0 {
-			i = (i + 1) & m.mask
-		}
-		s[i] = e
-	}
-	return memory.FreeSlice(m.alloc, old)
-}
+func (m *Map[K, V]) Clip() error { return m.table.Clip() }
 
 // Delete removes key and reports whether it was present.
 func (m *Map[K, V]) Delete(key K) bool {
-	hole, ok := m.find(key, m.hash(key))
-	if !ok {
-		return false
-	}
-	s := m.slots.Elems()
-	for i := (hole + 1) & m.mask; s[i].hash != 0; i = (i + 1) & m.mask {
-		if (i-s[i].hash)&m.mask >= (i-hole)&m.mask {
-			s[hole] = s[i]
-			hole = i
-		}
-	}
-	s[hole] = slot[K, V]{}
-	m.n--
-	m.mods++
-	return true
+	_, ok := m.table.Remove(m.hash(key), func(s *slot[K, V]) bool { return s.key == key })
+	return ok
 }
 
 // All yields every key and value. Updating the value of an existing key
 // during the loop is allowed; adding or deleting keys, or Clip, panics.
 func (m *Map[K, V]) All() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
-		mods := m.mods
-		for _, e := range m.slots.Elems() {
-			if e.hash == 0 {
-				continue
-			}
-			if !yield(e.key, e.value) {
-				return
-			}
-			if m.mods != mods {
-				panic("hashmap: modified during All")
-			}
-		}
+		m.table.All("hashmap", func(s *slot[K, V]) bool { return yield(s.key, s.value) })
 	}
 }
 
@@ -214,9 +149,4 @@ func (m *Map[K, V]) Values() iter.Seq[V] {
 }
 
 // Free releases the entries. m must not be used afterwards.
-func (m *Map[K, V]) Free() error {
-	err := memory.FreeSlice(m.alloc, m.slots)
-	m.slots, m.mask, m.n = memory.Slice[slot[K, V]]{}, 0, 0
-	m.mods++
-	return err
-}
+func (m *Map[K, V]) Free() error { return m.table.Free() }

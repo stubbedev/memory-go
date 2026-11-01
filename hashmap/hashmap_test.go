@@ -226,3 +226,88 @@ func TestStructuralChangeDuringAllPanics(t *testing.T) {
 		}
 	})
 }
+
+func TestManyDeletionsDoNotFillTheTable(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	m, err := hashmap.New[int, int](a, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Free()
+	before := a.Stats()
+	for i := range 1 << 18 {
+		if err := m.Set(i, i); err != nil {
+			t.Fatal(err)
+		}
+		if !m.Delete(i) {
+			t.Fatalf("Delete(%d) missed", i)
+		}
+		if _, ok := m.Get(i); ok {
+			t.Fatalf("Get(%d) found a deleted key", i)
+		}
+	}
+	if after := a.Stats(); after != before {
+		t.Fatalf("churn grew the table: %+v -> %+v", before, after)
+	}
+}
+
+func TestIntHasherAgreesWithDefault(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	m, err := hashmap.NewHashed[uint64, uint64](a, 0, hashmap.Int[uint64])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Free()
+	for i := range uint64(100_000) {
+		if err := m.Set(i*i, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range uint64(100_000) {
+		if got, ok := m.Get(i * i); !ok || got != i {
+			t.Fatalf("Get(%d) = %d, %v", i*i, got, ok)
+		}
+	}
+	if m.Len() != 100_000 {
+		t.Fatalf("Len = %d", m.Len())
+	}
+}
+
+func TestEntriesCostUnderFortyBytes(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	const n = 1 << 20
+	m, err := hashmap.New[uint64, uint64](a, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Free()
+	if got := a.Stats().Bytes / n; got >= 40 {
+		t.Fatalf("%d bytes per entry, want under 40", got)
+	}
+}
+
+func BenchmarkIntHasherSetGet(b *testing.B) {
+	a := memtest.Local(b)
+	m, err := hashmap.NewHashed[int, int](a, 1<<16, hashmap.Int[int])
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer m.Free()
+	i := 0
+	for b.Loop() {
+		key := i & (1<<16 - 1)
+		if err := m.Set(key, i); err != nil {
+			b.Fatal(err)
+		}
+		if _, ok := m.Get(key); !ok {
+			b.Fatal("missing key")
+		}
+		i++
+	}
+}
