@@ -149,6 +149,7 @@ type heap struct {
 	peers    *Shared
 	stats    Stats
 	touched  int
+	lent     int
 	deferred error
 	owner    uint32
 	shard    uint32
@@ -415,7 +416,7 @@ func (h *heap) close() error {
 	h.cur, h.partial = [numClasses]*span{}, [numClasses]*span{}
 	h.hot, h.cold, h.chunks = nil, nil, nil
 	h.remote.Store(nil)
-	h.stats, h.touched, h.owner = Stats{}, 0, 0
+	h.stats, h.touched, h.lent, h.owner = Stats{}, 0, 0, 0
 	return errors.Join(errs...)
 }
 
@@ -424,5 +425,5 @@ func (h *heap) footprint() Footprint {
 	for _, s := range h.hot {
 		retained += int(s.dirty)
 	}
-	return Footprint{Mapped: len(h.chunks) * chunkSize, Committed: h.touched, Retained: retained}
+	return Footprint{Mapped: len(h.chunks)*chunkSize - h.lent*spanSize, Committed: h.touched, Retained: retained}
 }

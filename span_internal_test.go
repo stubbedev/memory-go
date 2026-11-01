@@ -130,10 +130,7 @@ func TestLentSpansBalanceTheParentAccount(t *testing.T) {
 
 	var l Local
 	defer l.Close()
-	a, err := NewArena(&l)
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := NewArena(&l)
 	for range 100_000 {
 		if _, err := New[[4]uint64](a); err != nil {
 			t.Fatal(err)

@@ -19,8 +19,6 @@ var (
 	ErrNegativeLen = errors.New("negative length")
 	// ErrTooLarge reports a size that overflows int.
 	ErrTooLarge = errors.New("allocation size overflows int")
-	// ErrArenaParent reports an Arena whose parent cannot lend it spans.
-	ErrArenaParent = errors.New("arena parent must be a Local or a Shared")
 	// ErrAlignment reports an alignment that is not a power of two up to 4 KiB.
 	ErrAlignment = errors.New("invalid alignment")
 )
