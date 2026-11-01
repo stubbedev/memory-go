@@ -66,7 +66,13 @@ func (s Slice[T]) Elems() []T {
 
 // Ref returns a non-owning reference to element i, valid until s is resized
 // or freed. It panics if i is out of range or s is already freed.
-func (s Slice[T]) Ref(i int) Ref[T] { return Ref[T]{p: &s.Elems()[i]} }
+func (s Slice[T]) Ref(i int) Ref[T] {
+	if uint(i) >= uint(s.n) {
+		panic(fmt.Sprintf("memory: index out of range [%d] with length %d", i, s.n))
+	}
+	checkLive(unsafe.Pointer(s.p), sizeOf[T](s.n))
+	return Ref[T]{p: (*T)(unsafe.Add(unsafe.Pointer(s.p), uintptr(i)*unsafe.Sizeof(*s.p)))}
+}
 
 // New allocates a zeroed T.
 func New[T any](a Allocator) (Ptr[T], error) {

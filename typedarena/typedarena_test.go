@@ -123,3 +123,29 @@ func TestResetReusesZeroedMemory(t *testing.T) {
 		t.Fatalf("Reset cycles changed allocator stats: %+v -> %+v", before, after)
 	}
 }
+
+func TestAllocAfterItsParentArenaResetPanics(t *testing.T) {
+	t.Parallel()
+
+	if !memory.Checked {
+		t.Skip("the liveness check is compiled out")
+	}
+	parent := memory.NewArena(memtest.Local(t))
+	defer parent.Free()
+	ta, err := typedarena.New[int](parent, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ta.Alloc(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Alloc from a chunk its parent freed did not panic")
+		}
+	}()
+	_, _ = ta.Alloc()
+}
