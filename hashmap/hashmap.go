@@ -43,8 +43,9 @@ type slot[K comparable, V any] struct {
 // Iteration order is unspecified. Pointers into it are valid until the next
 // call that may grow or shrink it.
 type Map[K comparable, V any] struct {
-	table *swiss.Table[slot[K, V]]
-	hash  func(K) uint64
+	table   *swiss.Table[slot[K, V]]
+	hash    func(K) uint64
+	touched uint64
 }
 
 // New returns an empty Map with room for capacity entries, hashing with
@@ -150,3 +151,32 @@ func (m *Map[K, V]) Values() iter.Seq[V] {
 
 // Free releases the entries. m must not be used afterwards.
 func (m *Map[K, V]) Free() error { return m.table.Free() }
+
+const batchSize = 16
+
+// GetMany looks up every key, storing each value in values and whether it was found
+// in found, which must be at least as long as keys. On a table larger than the CPU
+// caches it beats calling Get in a loop, because it starts each batch's cache misses
+// together rather than one after another.
+func (m *Map[K, V]) GetMany(keys []K, values []V, found []bool) {
+	values, found = values[:len(keys)], found[:len(keys)]
+	var hashes [batchSize]uint64
+	for start := 0; start < len(keys); start += batchSize {
+		batch := keys[start:min(start+batchSize, len(keys))]
+		var touched uint64
+		for i, key := range batch {
+			hashes[i] = m.hash(key)
+			touched += m.table.Touch(hashes[i])
+		}
+		m.touched = touched
+		for i, key := range batch {
+			s := m.find(key, hashes[i])
+			if s == nil {
+				var zero V
+				values[start+i], found[start+i] = zero, false
+				continue
+			}
+			values[start+i], found[start+i] = s.value, true
+		}
+	}
+}

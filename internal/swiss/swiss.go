@@ -235,3 +235,8 @@ func (t *Table[S]) Free() error {
 	t.mods++
 	return err
 }
+
+// Touch loads the group hash h probes first and returns its control word. Loads
+// from several Touch calls run in parallel on an out-of-order core, so touching a
+// batch before searching it turns serial cache misses into overlapping ones.
+func (t *Table[S]) Touch(h uint64) uint64 { return t.groups[(h>>h2Bits)&t.mask].ctrl }

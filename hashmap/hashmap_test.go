@@ -311,3 +311,73 @@ func BenchmarkIntHasherSetGet(b *testing.B) {
 		i++
 	}
 }
+
+func TestGetManyMatchesGet(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	m, err := hashmap.New[uint64, uint64](a, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Free()
+	for i := range uint64(10_000) {
+		if err := m.Set(i*2, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keys := make([]uint64, 1003)
+	for i := range keys {
+		keys[i] = uint64(i) * 7
+	}
+	values, found := make([]uint64, len(keys)), make([]bool, len(keys))
+	for i := range values {
+		values[i] = 99
+	}
+	m.GetMany(keys, values, found)
+	for i, key := range keys {
+		want, wantOK := m.Get(key)
+		if values[i] != want || found[i] != wantOK {
+			t.Fatalf("key %d: %d, %v; want %d, %v", key, values[i], found[i], want, wantOK)
+		}
+	}
+	m.GetMany(nil, nil, nil)
+}
+
+func benchLookups(b *testing.B, size int, batched bool) {
+	a := &memory.Local{}
+	defer a.Close()
+	m, err := hashmap.NewHashed[uint64, uint64](a, size, hashmap.Int[uint64])
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := range uint64(size) {
+		if err := m.Set(i, i); err != nil {
+			b.Fatal(err)
+		}
+	}
+	const batch = 256
+	keys, values, found := make([]uint64, batch), make([]uint64, batch), make([]bool, batch)
+	x := uint64(88172645463325252)
+	for b.Loop() {
+		for i := range keys {
+			x ^= x << 13
+			x ^= x >> 7
+			x ^= x << 17
+			keys[i] = x % uint64(size)
+		}
+		if batched {
+			m.GetMany(keys, values, found)
+			continue
+		}
+		for i, key := range keys {
+			values[i], found[i] = m.Get(key)
+		}
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*batch), "ns/key")
+}
+
+func BenchmarkLookupLoop16M(b *testing.B)    { benchLookups(b, 16<<20, false) }
+func BenchmarkLookupGetMany16M(b *testing.B) { benchLookups(b, 16<<20, true) }
+func BenchmarkLookupLoop64K(b *testing.B)    { benchLookups(b, 64<<10, false) }
+func BenchmarkLookupGetMany64K(b *testing.B) { benchLookups(b, 64<<10, true) }
