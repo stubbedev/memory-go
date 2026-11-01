@@ -124,3 +124,31 @@ func TestTrimUnmapsEmptyChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLentSpansBalanceTheParentAccount(t *testing.T) {
+	t.Parallel()
+
+	var l Local
+	defer l.Close()
+	a, err := NewArena(&l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 100_000 {
+		if _, err := New[[4]uint64](a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := a.Footprint().Committed; got < 100_000*32 {
+		t.Fatalf("arena Committed = %d", got)
+	}
+	if err := a.Free(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Trim(); err != nil {
+		t.Fatal(err)
+	}
+	if foot := l.Footprint(); foot.Committed != 0 || foot.Mapped != 0 {
+		t.Fatalf("Footprint after Trim = %+v", foot)
+	}
+}
