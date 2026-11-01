@@ -27,6 +27,17 @@ func New[T any](a memory.Allocator, capacity int) (*Vector[T], error) {
 	return &Vector[T]{alloc: a, buf: buf, elems: buf.Elems()}, nil
 }
 
+// From returns a Vector holding a copy of values.
+func From[T any](a memory.Allocator, values []T) (*Vector[T], error) {
+	v, err := New[T](a, len(values))
+	if err != nil {
+		return nil, err
+	}
+	copy(v.elems, values)
+	v.n = len(values)
+	return v, nil
+}
+
 // NewStable returns an empty Vector that never moves its elements, so pointers
 // into it stay valid as it grows, and growing never copies. It reserves address
 // space for maxLen elements, using memory only for those it holds, and growing
@@ -58,12 +69,17 @@ func (v *Vector[T]) Ptr(i int) *T { return &v.elems[:v.n][i] }
 // Set replaces element i. It panics if i is out of range.
 func (v *Vector[T]) Set(i int, value T) { v.elems[:v.n][i] = value }
 
-// Reserve grows v, if needed, to hold at least n elements.
+// Reserve grows v, if needed, to hold at least n elements. On a Vector from NewStable,
+// n past its maxLen returns memory.ErrRegionFull and leaves v as it was.
 func (v *Vector[T]) Reserve(n int) error {
 	if n <= len(v.elems) {
 		return nil
 	}
-	return v.resize(max(n, 2*len(v.elems), 4))
+	target := max(n, 2*len(v.elems), 4)
+	if v.region != nil && n <= v.region.Cap() {
+		target = min(target, v.region.Cap())
+	}
+	return v.resize(target)
 }
 
 // Clip shrinks the capacity of v to its length.
@@ -74,19 +90,12 @@ func (v *Vector[T]) resize(n int) error {
 		return v.resizeRegion(n)
 	}
 	buf, err := memory.ResizeSlice(v.alloc, v.buf, n)
-	if err != nil {
-		return err
-	}
 	v.buf = buf
 	v.elems = buf.Elems()
-	return nil
+	return err
 }
 
 func (v *Vector[T]) resizeRegion(n int) error {
-	limit := v.region.Cap()
-	if n > limit && v.n < limit && len(v.elems) < limit {
-		n = limit
-	}
 	if have := v.region.Len(); n > have {
 		if _, err := v.region.Grow(n - have); err != nil {
 			return err

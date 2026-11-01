@@ -226,3 +226,108 @@ func BenchmarkAppend(b *testing.B) {
 	}
 	b.SetBytes(1 << 19)
 }
+
+func TestStableAppendPastLimitFails(t *testing.T) {
+	t.Parallel()
+
+	v, err := vector.NewStable[int](5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Free()
+	if err := v.Append(1, 2, 3, 4, 5, 6, 7, 8, 9, 10); !errors.Is(err, memory.ErrRegionFull) {
+		t.Fatalf("Append past the limit: %v", err)
+	}
+	if v.Len() != 0 {
+		t.Fatalf("Len = %d after failed Append", v.Len())
+	}
+	if err := v.Append(1, 2, 3, 4, 5); err != nil {
+		t.Fatal(err)
+	}
+	if got := v.Slice(); len(got) != 5 || got[4] != 5 {
+		t.Fatalf("Slice = %v", got)
+	}
+}
+
+func TestStableReservePastLimitFails(t *testing.T) {
+	t.Parallel()
+
+	v, err := vector.NewStable[int](5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Free()
+	if err := v.Reserve(100); !errors.Is(err, memory.ErrRegionFull) {
+		t.Fatalf("Reserve past the limit: %v", err)
+	}
+	if v.Cap() != 0 {
+		t.Fatalf("Cap = %d after failed Reserve", v.Cap())
+	}
+}
+
+func TestStablePushFillsToTheLimit(t *testing.T) {
+	t.Parallel()
+
+	v, err := vector.NewStable[int](5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Free()
+	for i := range 5 {
+		if err := v.Push(i); err != nil {
+			t.Fatalf("Push(%d): %v", i, err)
+		}
+	}
+	if err := v.Push(5); !errors.Is(err, memory.ErrRegionFull) {
+		t.Fatalf("Push past the limit: %v", err)
+	}
+	if v.Len() != 5 || v.At(4) != 4 {
+		t.Fatalf("Len = %d", v.Len())
+	}
+}
+
+func TestResizeWhoseOldBufferFailsToFreeKeepsTheNewOne(t *testing.T) {
+	t.Parallel()
+
+	l := memtest.Local(t)
+	f := memory.NewFaulty(l)
+	v, err := vector.New[int](f, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Append(1, 2, 3, 4); err != nil {
+		t.Fatal(err)
+	}
+	f.FailFreesAfter(0)
+	if err := v.Reserve(1 << 12); !errors.Is(err, memory.ErrInjected) {
+		t.Fatalf("Reserve: %v", err)
+	}
+	f.FailFreesAfter(-1)
+	if v.Cap() < 1<<12 {
+		t.Fatalf("Cap = %d", v.Cap())
+	}
+	if got := v.Slice(); len(got) != 4 || got[3] != 4 {
+		t.Fatalf("Slice = %v", got)
+	}
+	if err := v.Push(5); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Free(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFromCopies(t *testing.T) {
+	t.Parallel()
+
+	values := []int{1, 2, 3}
+	v, err := vector.From(memtest.Local(t), values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Free()
+	values[0] = 9
+	if v.Len() != 3 || v.At(0) != 1 || v.At(2) != 3 {
+		t.Fatalf("Slice = %v", v.Slice())
+	}
+}
