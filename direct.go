@@ -14,6 +14,7 @@ import (
 const (
 	hotBytes    = 4 << 20
 	hotMapping  = 32 << 20
+	hugeSize    = 2 << 20
 	liveHotPart = 8
 	retainSlack = 4 << 20
 )
@@ -53,6 +54,7 @@ type direct struct {
 	liveBytes  int
 	peak       int
 	stats      Stats
+	huge       bool
 }
 
 func (d *direct) make(size int, f fill) (unsafe.Pointer, error) {
@@ -135,6 +137,16 @@ func (d *direct) resize(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, er
 			return p, nil
 		}
 	}
+	if rounded > m.reserved && !d.huge {
+		moved, grown, err := osGrow(p, m.reserved, rounded)
+		if err != nil {
+			return nil, fmt.Errorf("grow %d bytes at %#x to %d: %w", m.reserved, uintptr(p), rounded, err)
+		}
+		if grown {
+			d.adoptGrown(p, moved, m, oldSize, size, rounded)
+			return moved, nil
+		}
+	}
 	moved, err := d.makeLocked(size, total, zeroed)
 	if err != nil {
 		return nil, err
@@ -142,6 +154,15 @@ func (d *direct) resize(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, er
 	n := min(oldSize, size)
 	copy(unsafe.Slice((*byte)(moved), n), unsafe.Slice((*byte)(p), n))
 	return moved, d.releaseLocked(p, oldSize)
+}
+
+func (d *direct) adoptGrown(old, moved unsafe.Pointer, m liveMapping, oldSize, size, rounded int) {
+	delete(d.live, old)
+	clearFrom(moved, oldSize, m.reserved)
+	d.account(m.reserved, rounded)
+	d.peak = max(d.peak, d.liveBytes)
+	stampTrailer(moved, size)
+	d.live[moved] = liveMapping{reserved: rounded, size: size}
 }
 
 func (d *direct) account(oldReserved, reserved int) {
@@ -172,12 +193,29 @@ func (d *direct) alloc(total int, f fill) (unsafe.Pointer, int, error) {
 	if i := d.reusable(size); i >= 0 {
 		return d.reuse(i, total, f)
 	}
-	base, err := osMap(size)
+	base, err := d.mapFresh(size)
 	if err != nil {
 		return nil, 0, fmt.Errorf("map %d bytes: %w", size, err)
 	}
 	d.admit(base, size)
 	return base, size, nil
+}
+
+func (d *direct) mapFresh(size int) (unsafe.Pointer, error) {
+	if !d.huge || size < hugeSize {
+		return osMap(size)
+	}
+	base, err := osReserve(size, hugeSize)
+	if err != nil {
+		return nil, err
+	}
+	if err := osRecommit(base, size); err != nil {
+		return nil, errors.Join(err, osUnmap(base, size))
+	}
+	if err := osAdviseHuge(base, size); err != nil {
+		return nil, errors.Join(err, osUnmap(base, size))
+	}
+	return base, nil
 }
 
 func (d *direct) reusable(size int) int {
@@ -314,6 +352,12 @@ func (d *direct) snapshot() (Stats, Footprint) {
 		Committed: d.liveBytes + d.hot,
 		Retained:  d.freedBytes,
 	}
+}
+
+func (d *direct) useHugePages() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.huge = true
 }
 
 func (d *direct) trimLocked() error {

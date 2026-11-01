@@ -56,3 +56,7 @@ func osRecommit(p unsafe.Pointer, size int) error {
 }
 
 func osShrink(unsafe.Pointer, int, int) (bool, error) { return false, nil }
+
+func osGrow(unsafe.Pointer, int, int) (unsafe.Pointer, bool, error) { return nil, false, nil }
+
+func osAdviseHuge(unsafe.Pointer, int) error { return nil }

@@ -77,3 +77,40 @@ func TestReusingDecommittedMappingStaysUncommitted(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLargeGrowthRemapsInsteadOfCopying(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	const n = 64 << 20
+	s, err := memory.MakeSlice[byte](a, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range s.Elems() {
+		s.Elems()[i] = byte(i)
+	}
+	if s, err = memory.ResizeSlice(a, s, 2*n); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.Footprint().Retained; got != 0 {
+		t.Fatalf("growing retired %d bytes, want the mapping remapped", got)
+	}
+	e := s.Elems()
+	if got := resident(t, e); got > n+1<<20 {
+		t.Fatalf("resident %d after growing %d, want no second copy", got, n)
+	}
+	for i := range n {
+		if e[i] != byte(i) {
+			t.Fatalf("e[%d] = %d after remap", i, e[i])
+		}
+	}
+	for i := n; i < 2*n; i++ {
+		if e[i] != 0 {
+			t.Fatalf("e[%d] = %d, want 0", i, e[i])
+		}
+	}
+	if err := memory.FreeSlice(a, s); err != nil {
+		t.Fatal(err)
+	}
+}

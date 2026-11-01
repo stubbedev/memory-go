@@ -137,6 +137,14 @@ func (l *Local) Footprint() Footprint {
 	return foot.plus(l.h.footprint())
 }
 
+// UseHugePages makes later allocations of at least 2 MiB start on a 2 MiB boundary
+// and asks the operating system to back them with huge pages, which cuts
+// address translation misses on large randomly accessed data. Such allocations
+// can become resident in 2 MiB steps, first touch can be slower when physical
+// memory is fragmented, and growing one copies instead of remapping. Only Linux
+// acts on the request; elsewhere only the alignment changes.
+func (l *Local) UseHugePages() { l.d.useHugePages() }
+
 // Trim returns retained empty pages to the operating system.
 func (l *Local) Trim() error {
 	l.g.enter()
@@ -276,6 +284,9 @@ func (s *Shared) Footprint() Footprint {
 	}
 	return foot
 }
+
+// UseHugePages behaves like Local.UseHugePages.
+func (s *Shared) UseHugePages() { s.d.useHugePages() }
 
 // Trim returns retained empty pages to the operating system.
 func (s *Shared) Trim() error {
