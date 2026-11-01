@@ -135,3 +135,32 @@ func TestRejectsMisuse(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGetOnAMissDoesNotClear(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	p, err := bufpool.New(a, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size, at = 1 << 13, 100
+	first, err := p.Get(size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Bytes()[at] = 0xab
+	if err := p.Put(first); err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.Get(size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.Bytes()[at]; got != 0xab {
+		t.Fatalf("byte = %#x, want the recycled memory left uncleared", got)
+	}
+	if err := p.Put(second); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -78,7 +78,7 @@ func (p *Pool) Get(n int) (Buf, error) {
 	if s, ok := p.pop(c); ok {
 		return Buf{s: s, n: n}, nil
 	}
-	s, err := memory.MakeSliceAligned[byte](p.alloc, 1<<(minLog+c), 1<<minLog)
+	s, err := memory.MakeSliceAlignedUninit[byte](p.alloc, 1<<(minLog+c), 1<<minLog)
 	return Buf{s: s, n: n}, err
 }
 
