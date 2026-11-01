@@ -3,8 +3,13 @@ package memory
 import "unsafe"
 
 // String owns off-heap UTF-8 bytes. Unlike a Go string it may be stored
-// off-heap. FreeString releases it. The zero String is empty.
-type String struct{ b Slice[byte] }
+// off-heap. FreeString releases it. The zero String is empty. It is not
+// comparable, because == could only compare addresses; compare with String().
+// Use hashmap.Strings to key a map by text.
+type String struct {
+	_ [0]func()
+	b Slice[byte]
+}
 
 // NewString copies s off-heap.
 func NewString(a Allocator, s string) (String, error) {
