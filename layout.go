@@ -30,13 +30,22 @@ var (
 	verdicts    atomic.Pointer[map[uintptr]error]
 )
 
-func checkType(t reflect.Type) error {
-	key := reflect.ValueOf(t).Pointer()
+func typeKey[T any]() uintptr {
+	var probe any = (*T)(nil)
+	return (*[2]uintptr)(unsafe.Pointer(&probe))[0]
+}
+
+func checkType[T any]() error {
+	key := typeKey[T]()
 	if m := verdicts.Load(); m != nil {
 		if err, ok := (*m)[key]; ok {
 			return err
 		}
 	}
+	return recordVerdict(reflect.TypeFor[T](), key)
+}
+
+func recordVerdict(t reflect.Type, key uintptr) error {
 	verdictsMu.Lock()
 	defer verdictsMu.Unlock()
 	old := map[uintptr]error{}
@@ -92,18 +101,23 @@ func findPointer(t reflect.Type, path string) (string, reflect.Type) {
 }
 
 func byteSize[T any](n int) (int, error) {
-	t := reflect.TypeFor[T]()
-	if err := checkType(t); err != nil {
+	if err := checkType[T](); err != nil {
 		return 0, err
 	}
-	if n < 0 {
-		return 0, fmt.Errorf("memory: %d×%s: %w", n, t, ErrNegativeLen)
-	}
-	size := int(t.Size())
-	if size != 0 && n > math.MaxInt/size {
-		return 0, fmt.Errorf("memory: %d×%s: %w", n, t, ErrTooLarge)
+	var zero T
+	size := int(unsafe.Sizeof(zero))
+	if n < 0 || (size != 0 && n > math.MaxInt/size) {
+		return 0, sizeError[T](n)
 	}
 	return sizeOf[T](n), nil
+}
+
+func sizeError[T any](n int) error {
+	t := reflect.TypeFor[T]()
+	if n < 0 {
+		return fmt.Errorf("memory: %d×%s: %w", n, t, ErrNegativeLen)
+	}
+	return fmt.Errorf("memory: %d×%s: %w", n, t, ErrTooLarge)
 }
 
 func sizeOf[T any](n int) int {
