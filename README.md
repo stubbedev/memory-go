@@ -59,10 +59,11 @@ read these as rough):
 
 | Operation | Checked | `memory_unchecked` | Go |
 | --- | --- | --- | --- |
-| `pool` `Get` + `Put` | 9 ns | 5 ns | 15 ns (`new`) |
-| `typedarena` `Alloc`, `Reset` every 1024 | 13 ns | 5 ns | 15 ns (`new`) |
-| `Arena` `New`, `Reset` every 1024 | 32 ns | 20 ns | 15 ns (`new`) |
-| `New` + `Free` | 73 ns | 34 ns | 15 ns (`new`) |
+| `pool` `Get` + `Put` | 7 ns | 5 ns | 15 ns (`new`) |
+| `typedarena` `Alloc`, `Reset` every 1024 | 8 ns | 5 ns | 15 ns (`new`) |
+| `Arena` `New`, `Reset` every 1024 | 26 ns | 17 ns | 15 ns (`new`) |
+| `New` + `Free` | 57 ns | 29 ns | 15 ns (`new`) |
+| `hashmap` get, `Int` hasher, 16K entries | 12 ns | 12 ns | |
 | `hashmap` set + get | 164 ns | 77 ns | 80 ns (`map`) |
 | `hashmap` set + get, `Int` hasher, presized | 79 ns | 70 ns | |
 
@@ -106,7 +107,9 @@ resized and must not outlive it.
 An allocation of up to 8 KiB takes a slot from a size class, four to a doubling,
 so rounding wastes at most a quarter. Slots of a power-of-two size are aligned to
 it, up to 4 KiB. `MakeSliceAligned` asks for an alignment, and `NewUninit`,
-`MakeSliceUninit` and `Pool.GetUninit` skip zeroing a value about to be overwritten.
+`MakeSliceUninit`, `MakeSliceAlignedUninit` and `Pool.GetUninit` skip zeroing a value
+about to be overwritten, except that a new value of a type holding handles is always
+zeroed: the collector inspects the old contents of a handle as it is overwritten. `NewFrom` and `SliceFrom` allocate and copy in one call.
 
 Anything larger gets its own mapping rounded up to whole OS pages, starting on a
 page: a 1024×1024 RGBA buffer (4 MiB) reserves 4 MiB plus at most one page.
@@ -173,10 +176,16 @@ use the same slots as unchecked ones. These panic at the point of the mistake:
 - using one `Local` from several goroutines at once
 - out-of-range indices in every container
 
+Handing a `Mark` to `Release` after a `Reset` or `Free`, or from another arena,
+panics too.
+
 Not caught: a stale handle whose memory was freed and has since been handed out
 again, `Ref`s, `View`s and `Index`es, and Go pointers or slices obtained from a
 handle and kept after it was freed. An `Arena` panics on a handle past its mark but
 not on one whose space was handed out again, and does not detect a double free.
+`Release` frees everything allocated or resized since the `Mark`, so a container
+from before the `Mark` that grew after it is gone too, and a `Vector` caches its
+elements without rechecking them, so using one after that goes uncaught.
 Reading through an old handle faults instead of panicking once its pages are
 unmapped: after `Close` or `Trim`, once a freed large mapping leaves the retention
 budget, after a large resize that remapped or shrank it, or on Windows once a span
@@ -203,21 +212,22 @@ saves.
 | --- | --- |
 | `memory.Local` | One goroutine. Zero value is ready; must not be copied after use. |
 | `memory.Shared` | Several goroutines. Each call works in a shard of its own, and memory freed on another shard returns to its owner without a lock. |
-| `memory.Arena` | One goroutine. Mixed types bump-allocated from a parent's spans; `Mark`, `Release` and `Reset` free in bulk. |
+| `memory.Arena` | One goroutine. Mixed types bump-allocated from a parent's spans; `Mark`, `Release` and `Reset` free in bulk, and `WithArena` scopes one to a function. |
 
 All satisfy `memory.Allocator`, which every function and container takes, so a
 hashmap can live in an arena and vanish with it. `Stats` reports live allocations
 and bytes, `Footprint` what is held from the OS, `Trim` returns retained empty pages
-to the OS, and `Close` releases everything at once.
+to the OS, and `Close` releases everything at once. An arena's `Footprint` and its
+parent's add up to the true total, so pass both to `SyncMemoryLimit`.
 
 ## Packages
 
 | Package | What it is |
 | --- | --- |
 | `memory` | Allocators, `Region`, and the `Ptr`, `Ref`, `Slice`, `View`, `Index` and `String` handles |
-| `vector` | Growable slice: `Push`, `Pop`, `At`, `Ptr`, `Set`, `RemoveAt`, `DeleteFunc`, `Truncate`, `Reserve`, `Clip`, `All`, and `Append` for bulk copies; `NewStable` never moves |
-| `hashmap` | Swiss table: `Map` for comparable keys with an optional `Hasher` such as `Int`, `Strings` for text keys looked up without allocating; capacity hint, `Clip`, and `Map.GetMany` for batched lookups that overlap their cache misses |
-| `btree` | Ordered map with `Min`, `Max`, `All` and `From` |
+| `vector` | Growable slice: `Push`, `Pop`, `At`, `Ptr`, `Set`, `RemoveAt`, `DeleteFunc`, `Truncate`, `Reserve`, `Clip`, `All`, `Values`, `From`, and `Append` for bulk copies; `NewStable` never moves |
+| `hashmap` | Swiss table: `Map` for comparable keys with an optional `Hasher` such as `Int`, `Strings` for text keys looked up without allocating; `Contains`, `Keys`, `Values`, `Clear`, `Clip`, a capacity hint, `Map.GetOrSet` and `Map.Upsert` that hash once, and `Map.GetMany` for batched lookups that overlap their cache misses |
+| `btree` | Ordered map with `Min`, `Max`, `All`, `Keys`, `Values`, `From`, `Range` and `Backward` |
 | `intern` | One copy of each distinct string, named by a 4-byte `Symbol` |
 | `bufpool` | Recycled byte buffers of power-of-two sizes, aligned for direct I/O |
 | `ring` | Bounded lock-free queue from one goroutine to one other |
@@ -225,24 +235,33 @@ to the OS, and `Close` releases everything at once.
 | `minheap` | Binary heap ordered by a `less` func, with `DeleteFunc` and `Clip` |
 | `typedarena` | Chunked bump allocator for one type, handing out `Ref`s; `Reset` reuses its warm chunks, `Free` releases them |
 | `pool` | Free-list allocator for one type: `Get` and `Put` individual values without touching the allocator |
+| `memtest` | `Local` and `Shared` allocators that fail a test on a leak |
 
 Containers are not safe for concurrent use, even on a `Shared` allocator.
 `memory.String` is not comparable, because `==` could only compare addresses; use
 `hashmap.Strings` to key by text. Adding or removing entries of a `hashmap`, `btree`
-or `linkedlist` while ranging over `All`, `From`, `Keys` or `Values` panics instead of reading freed or reused slots.
+or `linkedlist` while ranging over `All`, `From`, `Range`, `Backward`, `Keys` or `Values` panics instead of reading freed or reused slots.
+
+## Testing failure paths
+
+Allocation failures are hard to provoke, so `memory.NewFaulty` wraps an allocator and
+fails it on demand: `FailAllocsAfter(n)` for out-of-memory, `FailFreesAfter(n)` for
+the operating system refusing memory back. This module's own containers are swept
+this way, failing each allocation and free in turn.
 
 ## Recipes
 
 | Recipe | What it does |
 | --- | --- |
-| `just check` | Every release gate in order: vet, lint, test, test-unchecked, race, build |
+| `just check` | Every release gate in order: vet, lint, test, test-unchecked, test-32bit, race, build |
 | `just vet` | Static analysis with `go vet` |
 | `just lint` | `golangci-lint run` against the strict config in `.golangci.yml` |
 | `just test` | `go test ./...` |
 | `just test-unchecked` | `go test ./...` with the guards compiled out |
+| `just test-32bit` | `go test ./...` as a 32-bit program |
 | `just race` | Tests under the race detector (needs cgo; the library itself never does) |
 | `just build` | Compile-check every package |
-| `just fuzz [time]` | Fuzz each container against its Go model, 30s each by default |
+| `just fuzz [time]` | Fuzz each allocator and container against its model, 30s each by default |
 | `just bench` | All benchmarks, including the GC comparison |
 | `just fmt` | Format every Go source in place |
 
@@ -262,8 +281,9 @@ from downloading itself.
 
 `.github/workflows/test.yml` runs vet and tests on Linux, macOS and Windows,
 with and without `memory_unchecked`,
-the race detector on Linux and macOS, cross-builds for arm64, 386, FreeBSD and
-Windows on arm64, golangci-lint, and a minute of fuzzing per container.
+the race detector on Linux and macOS, the tests as a 32-bit program, cross-builds for
+arm64, 386, FreeBSD and Windows on arm64, golangci-lint, and a minute of fuzzing per
+allocator and container.
 `.github/workflows/security.yml` runs CodeQL (Go and GitHub Actions), Grype and
 govulncheck, uploading findings to code scanning; dependency review gates pull
 requests. Dependabot keeps the module and the workflows current.

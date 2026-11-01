@@ -4,8 +4,8 @@
 default:
     @just --list
 
-# Run every release gate in order: vet, lint, test, test-unchecked, race, build.
-check: vet lint test test-unchecked race build
+# Run every release gate in order: vet, lint, test, test-unchecked, test-32bit, race, build.
+check: vet lint test test-unchecked test-32bit race build
 
 # Static analysis of every package with go vet.
 vet:
@@ -25,6 +25,10 @@ test-unchecked:
     go vet -tags memory_unchecked ./...
     go test -tags memory_unchecked ./...
 
+# Run the test suite as a 32-bit program, which amd64 Linux can execute directly.
+test-32bit:
+    CGO_ENABLED=0 GOARCH=386 go test ./...
+
 # Run the test suite under the race detector, which needs cgo.
 race:
     CGO_ENABLED=1 go test -race ./...
@@ -33,8 +37,11 @@ race:
 build:
     go build -o /dev/null ./...
 
-# Fuzz every container against its Go model for the given time each.
+# Fuzz every allocator and container against its model for the given time each.
 fuzz time="30s":
+    go test . -run='^$' -fuzz='^FuzzLocal$' -fuzztime={{time}} -fuzzminimizetime=5x
+    go test . -run='^$' -fuzz='^FuzzShared$' -fuzztime={{time}} -fuzzminimizetime=5x
+    go test . -run='^$' -fuzz='^FuzzArena$' -fuzztime={{time}} -fuzzminimizetime=5x
     go test ./vector -run='^$' -fuzz='^FuzzMatchesSlice$' -fuzztime={{time}}
     go test ./hashmap -run='^$' -fuzz='^FuzzMatchesMap$' -fuzztime={{time}}
     go test ./hashmap -run='^$' -fuzz='^FuzzStringsMatchesMap$' -fuzztime={{time}}

@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 
 	memory "github.com/stubbedev/memory-go"
+	"github.com/stubbedev/memory-go/internal/seq"
 	"github.com/stubbedev/memory-go/internal/swiss"
 )
 
@@ -34,16 +35,11 @@ func Int[K Integer](seed uint64, key K) uint64 {
 	return hi ^ lo
 }
 
-type slot[K comparable, V any] struct {
-	key   K
-	value V
-}
-
 // Map is a hash map with off-heap entries. It is not safe for concurrent use.
 // Iteration order is unspecified. Pointers into it are valid until the next
 // call that may grow or shrink it.
 type Map[K comparable, V any] struct {
-	table   *swiss.Table[slot[K, V]]
+	table   *swiss.Table[swiss.Entry[K, V]]
 	hash    func(K) uint64
 	touched uint64
 }
@@ -63,7 +59,7 @@ func NewHashed[K comparable, V any](a memory.Allocator, capacity int, h Hasher[K
 }
 
 func build[K comparable, V any](a memory.Allocator, capacity int, hash func(K) uint64) (*Map[K, V], error) {
-	table, err := swiss.New(a, capacity, func(s *slot[K, V]) uint64 { return hash(s.key) })
+	table, err := swiss.New(a, capacity, func(e *swiss.Entry[K, V]) uint64 { return hash(e.Key) })
 	if err != nil {
 		return nil, err
 	}
@@ -73,49 +69,82 @@ func build[K comparable, V any](a memory.Allocator, capacity int, hash func(K) u
 // Len returns the number of entries.
 func (m *Map[K, V]) Len() int { return m.table.Len() }
 
-func (m *Map[K, V]) find(key K, h uint64) *slot[K, V] {
-	return m.table.Find(h, func(s *slot[K, V]) bool { return s.key == key })
+func (m *Map[K, V]) find(key K, h uint64) *swiss.Entry[K, V] {
+	return swiss.FindKey(m.table, h, key)
 }
 
 // Get returns the value for key, or reports false if key is absent.
 func (m *Map[K, V]) Get(key K) (V, bool) {
-	if s := m.find(key, m.hash(key)); s != nil {
-		return s.value, true
+	if e := m.find(key, m.hash(key)); e != nil {
+		return e.Value, true
 	}
 	var zero V
 	return zero, false
 }
 
+// Contains reports whether key is present.
+func (m *Map[K, V]) Contains(key K) bool { return m.find(key, m.hash(key)) != nil }
+
 // Ptr returns a pointer to the value for key, or reports false if key is
 // absent.
 func (m *Map[K, V]) Ptr(key K) (*V, bool) {
-	s := m.find(key, m.hash(key))
-	if s == nil {
+	e := m.find(key, m.hash(key))
+	if e == nil {
 		return nil, false
 	}
-	return &s.value, true
+	return &e.Value, true
 }
 
 // Set stores value under key.
 func (m *Map[K, V]) Set(key K, value V) error {
 	h := m.hash(key)
-	s := m.find(key, h)
-	if s == nil {
-		var err error
-		if s, err = m.table.Insert(h); err != nil {
-			return err
-		}
+	if e := m.find(key, h); e != nil {
+		*e = swiss.Entry[K, V]{Key: key, Value: value}
+		return nil
 	}
-	*s = slot[K, V]{key: key, value: value}
+	return m.insert(key, h, value)
+}
+
+func (m *Map[K, V]) insert(key K, h uint64, value V) error {
+	e, err := m.table.Insert(h)
+	if err != nil {
+		return err
+	}
+	*e = swiss.Entry[K, V]{Key: key, Value: value}
 	return nil
 }
+
+// GetOrSet returns the value for key and true if key is present. Otherwise it stores
+// value and returns it and false, hashing key only once either way.
+func (m *Map[K, V]) GetOrSet(key K, value V) (V, bool, error) {
+	h := m.hash(key)
+	if e := m.find(key, h); e != nil {
+		return e.Value, true, nil
+	}
+	return value, false, m.insert(key, h, value)
+}
+
+// Upsert stores f(old, true) under key if key is present, and f(zero, false)
+// otherwise, hashing key only once. f must not modify m.
+func (m *Map[K, V]) Upsert(key K, f func(old V, found bool) V) error {
+	h := m.hash(key)
+	if e := m.find(key, h); e != nil {
+		e.Value = f(e.Value, true)
+		return nil
+	}
+	var zero V
+	return m.insert(key, h, f(zero, false))
+}
+
+// Clear removes every entry, keeping the memory for reuse.
+func (m *Map[K, V]) Clear() { m.table.Clear() }
 
 // Clip shrinks the table to the smallest size that holds the current entries.
 func (m *Map[K, V]) Clip() error { return m.table.Clip() }
 
 // Delete removes key and reports whether it was present.
 func (m *Map[K, V]) Delete(key K) bool {
-	_, ok := m.table.Remove(m.hash(key), func(s *slot[K, V]) bool { return s.key == key })
+	_, ok := m.table.Remove(m.hash(key), func(e *swiss.Entry[K, V]) bool { return e.Key == key })
 	return ok
 }
 
@@ -123,31 +152,15 @@ func (m *Map[K, V]) Delete(key K) bool {
 // during the loop is allowed; adding or deleting keys, or Clip, panics.
 func (m *Map[K, V]) All() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
-		m.table.All("hashmap", func(s *slot[K, V]) bool { return yield(s.key, s.value) })
+		m.table.All("hashmap", func(e *swiss.Entry[K, V]) bool { return yield(e.Key, e.Value) })
 	}
 }
 
 // Keys yields every key.
-func (m *Map[K, V]) Keys() iter.Seq[K] {
-	return func(yield func(K) bool) {
-		for k := range m.All() {
-			if !yield(k) {
-				return
-			}
-		}
-	}
-}
+func (m *Map[K, V]) Keys() iter.Seq[K] { return seq.Keys(m.All()) }
 
 // Values yields every value.
-func (m *Map[K, V]) Values() iter.Seq[V] {
-	return func(yield func(V) bool) {
-		for _, v := range m.All() {
-			if !yield(v) {
-				return
-			}
-		}
-	}
-}
+func (m *Map[K, V]) Values() iter.Seq[V] { return seq.Values(m.All()) }
 
 // Free releases the entries. m must not be used afterwards.
 func (m *Map[K, V]) Free() error { return m.table.Free() }
@@ -170,13 +183,13 @@ func (m *Map[K, V]) GetMany(keys []K, values []V, found []bool) {
 		}
 		m.touched = touched
 		for i, key := range batch {
-			s := m.find(key, hashes[i])
-			if s == nil {
+			e := m.find(key, hashes[i])
+			if e == nil {
 				var zero V
 				values[start+i], found[start+i] = zero, false
 				continue
 			}
-			values[start+i], found[start+i] = s.value, true
+			values[start+i], found[start+i] = e.Value, true
 		}
 	}
 }

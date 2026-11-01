@@ -79,19 +79,22 @@ func (t *Table) Intern(text string) (Symbol, error) {
 	if int64(t.names.Len()) >= math.MaxUint32-1 {
 		return 0, fmt.Errorf("intern: %d strings: %w", t.names.Len(), memory.ErrTooLarge)
 	}
+	if err := t.names.Reserve(t.names.Len() + 1); err != nil {
+		return 0, err
+	}
 	view, err := t.text.TakeView(len(text))
 	if err != nil {
 		return 0, err
 	}
 	copy(view.Elems(), text)
-	if err := t.names.Push(view); err != nil {
-		return 0, err
-	}
-	sym := Symbol(t.names.Len()) //nolint:gosec // bounded above
 	slot, err := t.table.Insert(h)
 	if err != nil {
 		return 0, err
 	}
+	if err := t.names.Push(view); err != nil {
+		return 0, err
+	}
+	sym := Symbol(t.names.Len()) //nolint:gosec // bounded above
 	*slot = sym
 	return sym, nil
 }

@@ -3,25 +3,11 @@
 package memory_test
 
 import (
-	"strings"
 	"testing"
 
 	memory "github.com/stubbedev/memory-go"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/memtest"
 )
-
-func mustPanic(t *testing.T, want string, f func()) {
-	t.Helper()
-	defer func() {
-		t.Helper()
-		r := recover()
-		msg, _ := r.(string)
-		if !strings.Contains(msg, want) {
-			t.Fatalf("panic = %v, want one containing %q", r, want)
-		}
-	}()
-	f()
-}
 
 func TestDoubleFreePanics(t *testing.T) {
 	t.Parallel()
@@ -171,10 +157,7 @@ func TestAppendStringInvalidatesOldString(t *testing.T) {
 func TestArenaHandlesPanicAfterReset(t *testing.T) {
 	t.Parallel()
 
-	a, err := memory.NewArena(memtest.Local(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := memory.NewArena(memtest.Local(t))
 	defer a.Free()
 	p, err := memory.New[point](a)
 	if err != nil {
@@ -187,10 +170,7 @@ func TestArenaHandlesPanicAfterReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustPanic(t, "after it was freed", func() { p.Value() })
-	other, err := memory.NewArena(memtest.Local(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	other := memory.NewArena(memtest.Local(t))
 	defer other.Free()
 	q, err := memory.New[point](a)
 	if err != nil {

@@ -151,6 +151,32 @@ func (t *Table[S]) locate(h uint64, eq func(*S) bool) (*group[S], uint64) {
 	}
 }
 
+// Entry is a slot holding a comparable key and its value.
+type Entry[K comparable, V any] struct {
+	Key   K
+	Value V
+}
+
+// FindKey is Find for an Entry table. It compares keys directly instead of calling
+// a closure per candidate, which shows in the hottest lookups.
+func FindKey[K comparable, V any](t *Table[Entry[K, V]], h uint64, key K) *Entry[K, V] {
+	h2 := h & h2Mask
+	at := (h >> h2Bits) & t.mask
+	for step := uint64(1); ; step++ {
+		g := &t.groups[at]
+		for m := matchH2(g.ctrl, h2); m != 0; m &= m - 1 {
+			e := &g.slots[slotOf(m)]
+			if e.Key == key {
+				return e
+			}
+		}
+		if matchEmpty(g.ctrl) != 0 {
+			return nil
+		}
+		at = (at + step) & t.mask
+	}
+}
+
 // Insert returns a slot to fill for hash h, whose key must be absent.
 func (t *Table[S]) Insert(h uint64) (*S, error) {
 	g, slot := t.firstFree(h)
@@ -226,6 +252,16 @@ func (t *Table[S]) All(who string, yield func(*S) bool) {
 			}
 		}
 	}
+}
+
+// Clear removes every entry, keeping the table's memory.
+func (t *Table[S]) Clear() {
+	clear(t.groups)
+	for i := range t.groups {
+		t.groups[i].ctrl = empties
+	}
+	t.n, t.growthLeft = 0, len(t.groups)*groupGrowth
+	t.mods++
 }
 
 // Free releases the table. t must not be used afterwards.

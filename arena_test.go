@@ -6,16 +6,13 @@ import (
 
 	memory "github.com/stubbedev/memory-go"
 	"github.com/stubbedev/memory-go/hashmap"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/memtest"
 	"github.com/stubbedev/memory-go/vector"
 )
 
 func newArena(t *testing.T) *memory.Arena {
 	t.Helper()
-	a, err := memory.NewArena(memtest.Local(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := memory.NewArena(memtest.Local(t))
 	t.Cleanup(func() {
 		if err := a.Free(); err != nil {
 			t.Error(err)
@@ -189,10 +186,7 @@ func TestArenaFreeReturnsSpans(t *testing.T) {
 	t.Parallel()
 
 	parent := memtest.Local(t)
-	a, err := memory.NewArena(parent)
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := memory.NewArena(parent)
 	for range 100_000 {
 		if _, err := memory.New[point](a); err != nil {
 			t.Fatal(err)
@@ -227,10 +221,7 @@ func TestArenaFreeReturnsSpans(t *testing.T) {
 }
 
 func BenchmarkArenaNewReset(b *testing.B) {
-	a, err := memory.NewArena(memtest.Local(b))
-	if err != nil {
-		b.Fatal(err)
-	}
+	a := memory.NewArena(memtest.Local(b))
 	defer a.Free()
 	for b.Loop() {
 		for range 1024 {

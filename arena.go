@@ -21,20 +21,24 @@ func (s *span) holds(p unsafe.Pointer, size int) bool {
 // parent allocator and takes mixed types and every container in this module, so
 // a request's whole object graph can go away in one call.
 //
-// It suits one goroutine at a time, and spans it holds count in its own Footprint,
-// not the parent's. Closing the parent invalidates it. Freeing or resizing the most recent
-// allocation reclaims its space or grows it in place; freeing anything else does
-// nothing until Reset. Reading a handle past the current mark panics, but a
-// handle whose space has been handed out again is not caught, and a double free
-// is not detected. The zero Arena is not usable; use NewArena.
+// It suits one goroutine at a time. Spans it holds count in its own Footprint and
+// not the parent's; allocations over 8 KiB come from the parent and count in the
+// parent's alone, so summing both gives the true total. Closing the parent
+// invalidates it. Freeing or resizing the most recent allocation reclaims its space
+// or grows it in place; freeing anything else does nothing until Reset. Reading a
+// handle past the current mark panics, but a handle whose space has been handed out
+// again is not caught, and a double free is not detected. The zero Arena is not
+// usable; use NewArena.
 type Arena struct {
 	_      noCopy
 	g      guard
-	parent spanSource
+	parent ArenaParent
 	owner  uint32
+	gen    uint64
 	spans  []*span
 	cur    int
 	big    []bigAlloc
+	bigSeq uint64
 	last   unsafe.Pointer
 	stats  Stats
 }
@@ -42,30 +46,38 @@ type Arena struct {
 type bigAlloc struct {
 	p    unsafe.Pointer
 	size int
+	seq  uint64
 }
 
 // Mark is a position in an Arena to Release back to.
 type Mark struct {
+	owner        uint32
+	gen          uint64
 	span, carved int
-	big          int
+	bigSeq       uint64
 	stats        Stats
-	valid        bool
 }
 
-type spanSource interface {
+// ArenaParent is an allocator an Arena can draw spans from. It is implemented by
+// *Local and *Shared only.
+type ArenaParent interface {
 	Allocator
 	takeSpan() (*span, error)
 	giveSpan(*span) error
 }
 
-// NewArena returns an empty Arena drawing from a, which must be a Local or a
-// Shared.
-func NewArena(a Allocator) (*Arena, error) {
-	src, ok := a.(spanSource)
-	if !ok {
-		return nil, fmt.Errorf("memory: arena on %T: %w", a, ErrArenaParent)
-	}
-	return &Arena{parent: src, owner: nextOwner()}, nil
+// NewArena returns an empty Arena drawing from parent.
+func NewArena(parent ArenaParent) *Arena {
+	return &Arena{parent: parent, owner: nextOwner()}
+}
+
+// WithArena runs f with a new Arena on parent and frees the Arena when f returns or
+// panics, so nothing allocated in f may be used afterwards. It returns f's error
+// joined with any error from freeing.
+func WithArena(parent ArenaParent, f func(*Arena) error) (err error) {
+	a := NewArena(parent)
+	defer func() { err = errors.Join(err, a.Free()) }()
+	return f(a)
 }
 
 func (a *Arena) newSpan() (*span, error) {
@@ -97,14 +109,24 @@ func (a *Arena) alloc(size, align int, f fill) (unsafe.Pointer, error) {
 	a.g.enter()
 	defer a.g.exit()
 	if size > smallMax {
-		p, err := a.parent.alloc(size, align, f)
-		if err != nil {
-			return nil, err
-		}
-		a.big = append(a.big, bigAlloc{p: p, size: size})
-		return p, nil
+		return a.allocBig(size, align, f)
 	}
 	return a.bump(size, align, f)
+}
+
+func (a *Arena) allocBig(size, align int, f fill) (unsafe.Pointer, error) {
+	p, err := a.parent.alloc(size, align, f)
+	if err != nil {
+		return nil, err
+	}
+	a.big = append(a.big, a.newBig(p, size))
+	return p, nil
+}
+
+func (a *Arena) newBig(p unsafe.Pointer, size int) bigAlloc {
+	b := bigAlloc{p: p, size: size, seq: a.bigSeq}
+	a.bigSeq++
+	return b
 }
 
 func (a *Arena) bump(size, align int, f fill) (unsafe.Pointer, error) {
@@ -147,30 +169,38 @@ func (a *Arena) verify(s *span, p unsafe.Pointer, size int) {
 func (a *Arena) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
 	a.g.enter()
 	defer a.g.exit()
-	if oldSize <= smallMax {
-		s := spanOf(p)
-		a.verify(s, p, oldSize)
-		off := uint32(uintptr(p) & spanMask)
-		if p == a.last && size <= smallMax && off+uint32(size) <= spanSize {
-			end := off + uint32(size)
-			if end > s.carved && s.carved < s.dirty {
-				clear(unsafe.Slice((*byte)(unsafe.Add(unsafe.Pointer(s), s.carved)), min(end, s.dirty)-s.carved))
-			}
-			s.carved = end
-			s.dirty = max(s.dirty, end)
-			a.stats.Bytes += size - oldSize
-			return p, nil
-		}
-	} else if size > smallMax {
-		moved, err := a.parent.realloc(p, oldSize, size)
-		if err != nil {
-			return nil, err
-		}
-		if moved != nil {
-			a.big[a.bigIndex(p)] = bigAlloc{p: moved, size: size}
-		}
-		return moved, nil
+	if oldSize > smallMax {
+		return a.reallocBig(p, oldSize, size)
 	}
+	s := spanOf(p)
+	a.verify(s, p, oldSize)
+	off := uint32(uintptr(p) & spanMask)
+	if p == a.last && size <= smallMax && off+uint32(size) <= spanSize {
+		end := off + uint32(size)
+		if end > s.carved && s.carved < s.dirty {
+			clear(unsafe.Slice((*byte)(unsafe.Add(unsafe.Pointer(s), s.carved)), min(end, s.dirty)-s.carved))
+		}
+		s.carved = end
+		s.dirty = max(s.dirty, end)
+		a.stats.Bytes += size - oldSize
+		return p, nil
+	}
+	return a.move(p, oldSize, size)
+}
+
+func (a *Arena) reallocBig(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
+	i := a.bigIndex(p)
+	if size <= smallMax {
+		return a.move(p, oldSize, size)
+	}
+	moved, err := a.parent.realloc(p, oldSize, size)
+	if moved != nil {
+		a.big[i] = a.newBig(moved, size)
+	}
+	return moved, err
+}
+
+func (a *Arena) move(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
 	moved, err := a.moveOut(size)
 	if err != nil {
 		return nil, err
@@ -184,12 +214,7 @@ func (a *Arena) moveOut(size int) (unsafe.Pointer, error) {
 	if size <= smallMax {
 		return a.bump(size, wordAlign, zeroed)
 	}
-	p, err := a.parent.alloc(size, wordAlign, zeroed)
-	if err != nil {
-		return nil, err
-	}
-	a.big = append(a.big, bigAlloc{p: p, size: size})
-	return p, nil
+	return a.allocBig(size, wordAlign, zeroed)
 }
 
 func (a *Arena) bigIndex(p unsafe.Pointer) int {
@@ -223,24 +248,30 @@ func (a *Arena) dropLocked(p unsafe.Pointer, size int) error {
 	return nil
 }
 
-// Mark returns the current position, to Release back to later.
+// Mark returns the current position, to Release back to later. An allocation made
+// before the Mark stays where it is from then on: resizing it moves it past the
+// Mark, so the next Release frees it. That includes the storage of a container that
+// grew after the Mark, which must not be used after the Release.
 func (a *Arena) Mark() Mark {
 	a.g.enter()
 	defer a.g.exit()
-	m := Mark{span: a.cur, big: len(a.big), stats: a.stats, valid: true}
+	a.last = nil
+	m := Mark{owner: a.owner, gen: a.gen, span: a.cur, bigSeq: a.bigSeq, stats: a.stats}
 	if a.cur < len(a.spans) {
 		m.carved = int(a.spans[a.cur].carved)
 	}
 	return m
 }
 
-// Release frees everything allocated since m was taken, keeping the memory for
-// reuse. It panics on the zero Mark and on a Mark it can tell has been released
-// past.
+// Release frees everything allocated or resized since m was taken, keeping the
+// memory for reuse. It restores the small-allocation counts of Stats to those at m,
+// so a small allocation made before m and freed after it counts as live again until
+// Reset. It panics on the zero Mark, on a Mark from another Arena, on a Mark from
+// before a Reset or Free, and on a Mark it can tell has been released past.
 func (a *Arena) Release(m Mark) error {
 	a.g.enter()
 	defer a.g.exit()
-	if !m.valid || m.span > a.cur || m.big > len(a.big) {
+	if m.owner != a.owner || m.gen != a.gen || m.span > a.cur || m.bigSeq > a.bigSeq {
 		panic("memory: Release to a Mark that is no longer valid")
 	}
 	if m.span < len(a.spans) {
@@ -254,39 +285,49 @@ func (a *Arena) Release(m Mark) error {
 		}
 		s.carved = carved
 	}
-	return a.rewind(m.span, m.big, m.stats)
+	return a.rewind(m.span, m.bigSeq, m.stats)
 }
 
-func (a *Arena) rewind(cur, big int, stats Stats) error {
+func (a *Arena) rewind(cur int, bigSeq uint64, stats Stats) error {
 	for i := cur + 1; i < len(a.spans) && i <= a.cur; i++ {
 		a.spans[i].carved = a.spans[i].data
 	}
-	errs := make([]error, 0, len(a.big)-big)
-	for _, b := range a.big[big:] {
+	var errs []error
+	a.big = slices.DeleteFunc(a.big, func(b bigAlloc) bool {
+		if b.seq < bigSeq {
+			return false
+		}
 		errs = append(errs, a.parent.free(b.p, b.size))
-	}
-	a.big = a.big[:big]
+		return true
+	})
+	a.bigSeq = bigSeq
 	a.cur, a.last, a.stats = cur, nil, stats
 	return errors.Join(errs...)
 }
 
-// Reset frees everything allocated from a, keeping its spans for reuse.
-func (a *Arena) Reset() error {
-	a.g.enter()
-	defer a.g.exit()
+func (a *Arena) rewindAll() error {
+	a.gen++
 	if len(a.spans) > 0 {
 		a.spans[0].carved = a.spans[0].data
 	}
 	return a.rewind(0, 0, Stats{})
 }
 
-// Free frees everything allocated from a and returns its spans to the parent. a
-// remains usable.
+// Reset frees everything allocated from a, keeping its spans for reuse, and
+// invalidates every Mark.
+func (a *Arena) Reset() error {
+	a.g.enter()
+	defer a.g.exit()
+	return a.rewindAll()
+}
+
+// Free frees everything allocated from a, returns its spans to the parent and
+// invalidates every Mark. a remains usable.
 func (a *Arena) Free() error {
 	a.g.enter()
 	defer a.g.exit()
 	errs := make([]error, 0, len(a.spans)+1)
-	errs = append(errs, a.rewind(0, 0, Stats{}))
+	errs = append(errs, a.rewindAll())
 	for _, s := range a.spans {
 		errs = append(errs, a.parent.giveSpan(s))
 	}
@@ -299,11 +340,15 @@ func (a *Arena) Free() error {
 func (a *Arena) Stats() Stats {
 	a.g.enter()
 	defer a.g.exit()
-	return a.stats
+	stats := a.stats
+	for _, b := range a.big {
+		stats = stats.plus(Stats{Live: 1, Bytes: b.size})
+	}
+	return stats
 }
 
-// Footprint reports the spans a holds from its parent and the large allocations
-// it holds through it.
+// Footprint reports the spans a holds from its parent. Allocations over 8 KiB are
+// held by the parent and count in its Footprint.
 func (a *Arena) Footprint() Footprint {
 	a.g.enter()
 	defer a.g.exit()
@@ -311,10 +356,6 @@ func (a *Arena) Footprint() Footprint {
 	for _, s := range a.spans {
 		f.Mapped += spanSize
 		f.Committed += int(s.dirty)
-	}
-	for _, b := range a.big {
-		f.Mapped += b.size
-		f.Committed += b.size
 	}
 	return f
 }
@@ -325,11 +366,13 @@ func (h *heap) lendSpan() (*span, error) {
 		return nil, err
 	}
 	h.touched -= int(s.dirty)
+	h.lent++
 	return s, nil
 }
 
 func (h *heap) reclaimSpan(s *span) error {
 	h.touched += int(s.dirty)
+	h.lent--
 	return h.retire(s)
 }
 

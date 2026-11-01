@@ -66,7 +66,13 @@ func (s Slice[T]) Elems() []T {
 
 // Ref returns a non-owning reference to element i, valid until s is resized
 // or freed. It panics if i is out of range or s is already freed.
-func (s Slice[T]) Ref(i int) Ref[T] { return Ref[T]{p: &s.Elems()[i]} }
+func (s Slice[T]) Ref(i int) Ref[T] {
+	if uint(i) >= uint(s.n) {
+		panic(fmt.Sprintf("memory: index out of range [%d] with length %d", i, s.n))
+	}
+	checkLive(unsafe.Pointer(s.p), sizeOf[T](s.n))
+	return Ref[T]{p: (*T)(unsafe.Add(unsafe.Pointer(s.p), uintptr(i)*unsafe.Sizeof(*s.p)))}
+}
 
 // New allocates a zeroed T.
 func New[T any](a Allocator) (Ptr[T], error) {
@@ -165,13 +171,15 @@ func (s Slice[T]) View(from, to int) View[T] {
 }
 
 // NewUninit is New without zeroing: the T holds whatever the memory held. Use
-// it only for a value that is written in full before it is read.
+// it only for a value that is written in full before it is read. A T holding
+// handles is zeroed anyway, because the garbage collector inspects the old value of
+// a handle while it is overwritten and would take stale bytes for a pointer.
 func NewUninit[T any](a Allocator) (Ptr[T], error) {
 	size, err := byteSize[T](1)
 	if err != nil {
 		return Ptr[T]{}, err
 	}
-	p, err := a.alloc(size, alignOf[T](), uninit)
+	p, err := a.alloc(size, alignOf[T](), uninitFill[T]())
 	if err != nil {
 		return Ptr[T]{}, fmt.Errorf("memory: allocate %s: %w", reflect.TypeFor[T](), err)
 	}
@@ -180,9 +188,10 @@ func NewUninit[T any](a Allocator) (Ptr[T], error) {
 
 // MakeSliceUninit is MakeSlice without zeroing: the elements hold whatever the
 // memory held, and a parser or decoder that overwrites them skips paying for
-// the clear. n == 0 returns the empty Slice.
+// the clear. n == 0 returns the empty Slice. A T holding handles is zeroed anyway; see
+// NewUninit.
 func MakeSliceUninit[T any](a Allocator, n int) (Slice[T], error) {
-	return makeSlice[T](a, n, alignOf[T](), uninit)
+	return makeSlice[T](a, n, alignOf[T](), uninitFill[T]())
 }
 
 // MakeSliceAligned allocates n zeroed Ts whose first element's address is a
@@ -191,10 +200,41 @@ func MakeSliceUninit[T any](a Allocator, n int) (Slice[T], error) {
 // 4 KiB, and allocations over 8 KiB start on an operating system page regardless.
 // The alignment does not survive ResizeSlice unless the new size also gets it.
 func MakeSliceAligned[T any](a Allocator, n, align int) (Slice[T], error) {
+	return makeSliceAligned[T](a, n, align, zeroed)
+}
+
+// MakeSliceAlignedUninit is MakeSliceAligned without zeroing, for a buffer about to
+// be overwritten. A T holding handles is zeroed anyway; see NewUninit.
+func MakeSliceAlignedUninit[T any](a Allocator, n, align int) (Slice[T], error) {
+	return makeSliceAligned[T](a, n, align, uninitFill[T]())
+}
+
+func makeSliceAligned[T any](a Allocator, n, align int, f fill) (Slice[T], error) {
 	if align <= 0 || align&(align-1) != 0 || align > maxAlign {
 		return Slice[T]{}, fmt.Errorf("memory: alignment %d: %w", align, ErrAlignment)
 	}
-	return makeSlice[T](a, n, max(align, alignOf[T]()), zeroed)
+	return makeSlice[T](a, n, max(align, alignOf[T]()), f)
+}
+
+// NewFrom allocates a T holding value.
+func NewFrom[T any](a Allocator, value T) (Ptr[T], error) {
+	p, err := NewUninit[T](a)
+	if err != nil {
+		return Ptr[T]{}, err
+	}
+	*p.p = value
+	return p, nil
+}
+
+// SliceFrom allocates a Slice holding a copy of values. Empty values return the
+// empty Slice.
+func SliceFrom[T any](a Allocator, values []T) (Slice[T], error) {
+	s, err := MakeSliceUninit[T](a, len(values))
+	if err != nil {
+		return Slice[T]{}, err
+	}
+	copy(s.Elems(), values)
+	return s, nil
 }
 
 func makeSlice[T any](a Allocator, n, align int, f fill) (Slice[T], error) {

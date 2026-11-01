@@ -87,10 +87,7 @@ func ExampleArena() {
 	var parent memory.Local
 	defer parent.Close()
 
-	a, err := memory.NewArena(&parent)
-	if err != nil {
-		panic(err)
-	}
+	a := memory.NewArena(&parent)
 	for request := range 2 {
 		name, err := memory.NewString(a, "request")
 		if err != nil {
@@ -107,7 +104,7 @@ func ExampleArena() {
 }
 
 func ExampleRegion() {
-	r, err := memory.NewRegion[int64](1 << 30)
+	r, err := memory.NewRegion[int64](1 << 24)
 	if err != nil {
 		panic(err)
 	}

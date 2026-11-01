@@ -5,7 +5,8 @@ import (
 	"testing"
 
 	memory "github.com/stubbedev/memory-go"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/internal/testkit"
+	"github.com/stubbedev/memory-go/memtest"
 	"github.com/stubbedev/memory-go/pool"
 )
 
@@ -27,7 +28,7 @@ func TestRejectsInvalidArguments(t *testing.T) {
 }
 
 func FuzzMatchesModel(f *testing.F) {
-	f.Add(memtest.Seed(9, 1<<15))
+	f.Add(testkit.Seed(9, 1<<15))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		a := memtest.Local(t)
@@ -36,7 +37,7 @@ func FuzzMatchesModel(f *testing.F) {
 			t.Fatal(err)
 		}
 		defer p.Free()
-		ops := memtest.NewOps(data)
+		ops := testkit.NewOps(data)
 		var items []pool.Item[particle]
 		var ids []uint64
 		for step := 0; ops.More(); step++ {

@@ -24,7 +24,7 @@ func TestRegionHandlesAreFourBytes(t *testing.T) {
 func TestRegionGrowsWithoutMoving(t *testing.T) {
 	t.Parallel()
 
-	r, err := memory.NewRegion[regionNode](1 << 28)
+	r, err := memory.NewRegion[regionNode](1 << 24)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	memory "github.com/stubbedev/memory-go"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/internal/testkit"
+	"github.com/stubbedev/memory-go/memtest"
 	"github.com/stubbedev/memory-go/minheap"
 )
 
@@ -19,7 +20,7 @@ func TestRejectsPointerElements(t *testing.T) {
 }
 
 func FuzzMatchesSortedSlice(f *testing.F) {
-	f.Add(memtest.Seed(7, 1<<15))
+	f.Add(testkit.Seed(7, 1<<15))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		h, err := minheap.New(memtest.Local(t), func(a, b uint16) bool { return a < b })
@@ -27,7 +28,7 @@ func FuzzMatchesSortedSlice(f *testing.F) {
 			t.Fatal(err)
 		}
 		defer h.Free()
-		ops := memtest.NewOps(data)
+		ops := testkit.NewOps(data)
 		var model []uint16
 		for step := 0; ops.More(); step++ {
 			switch op := ops.Int(8); {

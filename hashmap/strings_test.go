@@ -7,7 +7,8 @@ import (
 	"testing"
 
 	"github.com/stubbedev/memory-go/hashmap"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/internal/testkit"
+	"github.com/stubbedev/memory-go/memtest"
 )
 
 func TestStringsFindsByTextNotAddress(t *testing.T) {
@@ -55,7 +56,7 @@ func TestStringsGetDoesNotAllocate(t *testing.T) {
 }
 
 func FuzzStringsMatchesMap(f *testing.F) {
-	f.Add(memtest.Seed(5, 1<<16))
+	f.Add(testkit.Seed(5, 1<<16))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		a := memtest.Local(t)
@@ -64,7 +65,7 @@ func FuzzStringsMatchesMap(f *testing.F) {
 			t.Fatal(err)
 		}
 		model := map[string]uint64{}
-		ops := memtest.NewOps(data)
+		ops := testkit.NewOps(data)
 		for ops.More() {
 			var raw [8]byte
 			binary.LittleEndian.PutUint64(raw[:], ops.Uint64()%512)
