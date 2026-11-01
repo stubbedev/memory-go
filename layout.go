@@ -19,6 +19,8 @@ var (
 	ErrNegativeLen = errors.New("negative length")
 	// ErrTooLarge reports a size that overflows int.
 	ErrTooLarge = errors.New("allocation size overflows int")
+	// ErrAlignment reports an alignment that is not a power of two up to 4 KiB.
+	ErrAlignment = errors.New("invalid alignment")
 )
 
 type offHeap interface{ offHeap() }

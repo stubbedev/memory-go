@@ -1,5 +1,5 @@
 // Package chunks carves single values and short runs of a type from
-// fixed-size off-heap chunks, the storage behind typedarena and pool.
+// fixed-size off-heap chunks, the storage behind typedarena, pool and intern.
 package chunks
 
 import (
@@ -19,6 +19,7 @@ type Chunks[T any] struct {
 	size  int
 	full  []memory.Slice[T]
 	big   []memory.Slice[T]
+	elems []T
 	cur   int
 	used  int
 }
@@ -32,7 +33,7 @@ func New[T any](a memory.Allocator, size int) (*Chunks[T], error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Chunks[T]{alloc: a, size: size, full: []memory.Slice[T]{first}}, nil
+	return &Chunks[T]{alloc: a, size: size, full: []memory.Slice[T]{first}, elems: first.Elems()}, nil
 }
 
 func (c *Chunks[T]) reserve(n int) error {
@@ -41,7 +42,8 @@ func (c *Chunks[T]) reserve(n int) error {
 	}
 	if c.cur+1 < len(c.full) {
 		c.cur++
-		clear(c.full[c.cur].Elems())
+		c.elems = c.full[c.cur].Elems()
+		clear(c.elems)
 		c.used = 0
 		return nil
 	}
@@ -50,14 +52,16 @@ func (c *Chunks[T]) reserve(n int) error {
 		return err
 	}
 	c.full = append(c.full, next)
-	c.cur, c.used = len(c.full)-1, 0
+	c.cur, c.used, c.elems = len(c.full)-1, 0, next.Elems()
 	return nil
 }
 
 // Take returns a reference to a new zeroed T.
 func (c *Chunks[T]) Take() (memory.Ref[T], error) {
-	if err := c.reserve(1); err != nil {
-		return memory.Ref[T]{}, err
+	if c.used == c.size {
+		if err := c.reserve(1); err != nil {
+			return memory.Ref[T]{}, err
+		}
 	}
 	r := c.full[c.cur].Ref(c.used)
 	c.used++
@@ -66,20 +70,29 @@ func (c *Chunks[T]) Take() (memory.Ref[T], error) {
 
 // TakeSlice returns n new zeroed Ts.
 func (c *Chunks[T]) TakeSlice(n int) ([]T, error) {
+	v, err := c.TakeView(n)
+	if err != nil {
+		return nil, err
+	}
+	return v.Elems(), nil
+}
+
+// TakeView returns n new zeroed Ts as a handle that may be stored off-heap.
+func (c *Chunks[T]) TakeView(n int) (memory.View[T], error) {
 	if n < 0 || n > c.size {
 		s, err := memory.MakeSlice[T](c.alloc, n)
 		if err != nil {
-			return nil, err
+			return memory.View[T]{}, err
 		}
 		c.big = append(c.big, s)
-		return s.Elems(), nil
+		return s.View(0, n), nil
 	}
 	if err := c.reserve(n); err != nil {
-		return nil, err
+		return memory.View[T]{}, err
 	}
-	s := c.full[c.cur].Elems()[c.used : c.used+n : c.used+n]
+	v := c.full[c.cur].View(c.used, c.used+n)
 	c.used += n
-	return s, nil
+	return v, nil
 }
 
 func (c *Chunks[T]) freeBig() error {
@@ -98,7 +111,8 @@ func (c *Chunks[T]) Reset() error {
 	if c.cur == 0 {
 		dirty = c.used
 	}
-	clear(c.full[0].Elems()[:dirty])
+	c.elems = c.full[0].Elems()
+	clear(c.elems[:dirty])
 	c.cur, c.used = 0, 0
 	return c.freeBig()
 }
@@ -110,6 +124,6 @@ func (c *Chunks[T]) Free() error {
 		errs = append(errs, memory.FreeSlice(c.alloc, s))
 	}
 	errs = append(errs, c.freeBig())
-	c.full, c.cur, c.used = nil, 0, 0
+	c.full, c.elems, c.cur, c.used = nil, nil, 0, 0
 	return errors.Join(errs...)
 }

@@ -96,15 +96,7 @@ func Free[T any](a Allocator, p Ptr[T]) error {
 
 // MakeSlice allocates n zeroed Ts. n == 0 returns the empty Slice.
 func MakeSlice[T any](a Allocator, n int) (Slice[T], error) {
-	size, err := byteSize[T](n)
-	if err != nil || n == 0 {
-		return Slice[T]{}, err
-	}
-	p, err := a.alloc(size, alignOf[T](), zeroed)
-	if err != nil {
-		return Slice[T]{}, fmt.Errorf("memory: allocate %d×%s: %w", n, reflect.TypeFor[T](), err)
-	}
-	return Slice[T]{p: (*T)(p), n: n}, nil
+	return makeSlice[T](a, n, alignOf[T](), zeroed)
 }
 
 // ResizeSlice changes the length of s to n, keeping the common prefix and
@@ -143,4 +135,76 @@ func FreeSlice[T any](a Allocator, s Slice[T]) error {
 		return fmt.Errorf("memory: free %d×%s: %w", s.n, reflect.TypeFor[T](), err)
 	}
 	return nil
+}
+
+// View is a non-owning handle to consecutive off-heap Ts, such as part of a
+// Slice. It cannot be freed on its own. The zero View is empty.
+type View[T any] struct {
+	p *T
+	n int
+}
+
+func (View[T]) offHeap() {}
+
+// Len returns the number of elements.
+func (v View[T]) Len() int { return v.n }
+
+// Elems returns the elements as a Go slice, valid as long as their owner is.
+// Its capacity equals its length.
+func (v View[T]) Elems() []T { return unsafe.Slice(v.p, v.n) }
+
+// View returns a non-owning handle to elements [from, to), valid until s is
+// resized or freed. It panics if the range is out of bounds or s is already
+// freed.
+func (s Slice[T]) View(from, to int) View[T] {
+	e := s.Elems()[from:to:to]
+	if len(e) == 0 {
+		return View[T]{}
+	}
+	return View[T]{p: &e[0], n: len(e)}
+}
+
+// NewUninit is New without zeroing: the T holds whatever the memory held. Use
+// it only for a value that is written in full before it is read.
+func NewUninit[T any](a Allocator) (Ptr[T], error) {
+	size, err := byteSize[T](1)
+	if err != nil {
+		return Ptr[T]{}, err
+	}
+	p, err := a.alloc(size, alignOf[T](), uninit)
+	if err != nil {
+		return Ptr[T]{}, fmt.Errorf("memory: allocate %s: %w", reflect.TypeFor[T](), err)
+	}
+	return Ptr[T]{p: (*T)(p)}, nil
+}
+
+// MakeSliceUninit is MakeSlice without zeroing: the elements hold whatever the
+// memory held, and a parser or decoder that overwrites them skips paying for
+// the clear. n == 0 returns the empty Slice.
+func MakeSliceUninit[T any](a Allocator, n int) (Slice[T], error) {
+	return makeSlice[T](a, n, alignOf[T](), uninit)
+}
+
+// MakeSliceAligned allocates n zeroed Ts whose first element's address is a
+// multiple of align, for hardware and system interfaces that need it: cache
+// lines, SIMD registers, direct I/O. align must be a power of two no larger than
+// 4 KiB, and allocations over 8 KiB start on an operating system page regardless.
+// The alignment does not survive ResizeSlice unless the new size also gets it.
+func MakeSliceAligned[T any](a Allocator, n, align int) (Slice[T], error) {
+	if align <= 0 || align&(align-1) != 0 || align > maxAlign {
+		return Slice[T]{}, fmt.Errorf("memory: alignment %d: %w", align, ErrAlignment)
+	}
+	return makeSlice[T](a, n, max(align, alignOf[T]()), zeroed)
+}
+
+func makeSlice[T any](a Allocator, n, align int, f fill) (Slice[T], error) {
+	size, err := byteSize[T](n)
+	if err != nil || n == 0 {
+		return Slice[T]{}, err
+	}
+	p, err := a.alloc(size, align, f)
+	if err != nil {
+		return Slice[T]{}, fmt.Errorf("memory: allocate %d×%s: %w", n, reflect.TypeFor[T](), err)
+	}
+	return Slice[T]{p: (*T)(p), n: n}, nil
 }
