@@ -191,10 +191,41 @@ func MakeSliceUninit[T any](a Allocator, n int) (Slice[T], error) {
 // 4 KiB, and allocations over 8 KiB start on an operating system page regardless.
 // The alignment does not survive ResizeSlice unless the new size also gets it.
 func MakeSliceAligned[T any](a Allocator, n, align int) (Slice[T], error) {
+	return makeSliceAligned[T](a, n, align, zeroed)
+}
+
+// MakeSliceAlignedUninit is MakeSliceAligned without zeroing, for a buffer about to
+// be overwritten.
+func MakeSliceAlignedUninit[T any](a Allocator, n, align int) (Slice[T], error) {
+	return makeSliceAligned[T](a, n, align, uninit)
+}
+
+func makeSliceAligned[T any](a Allocator, n, align int, f fill) (Slice[T], error) {
 	if align <= 0 || align&(align-1) != 0 || align > maxAlign {
 		return Slice[T]{}, fmt.Errorf("memory: alignment %d: %w", align, ErrAlignment)
 	}
-	return makeSlice[T](a, n, max(align, alignOf[T]()), zeroed)
+	return makeSlice[T](a, n, max(align, alignOf[T]()), f)
+}
+
+// NewFrom allocates a T holding value.
+func NewFrom[T any](a Allocator, value T) (Ptr[T], error) {
+	p, err := NewUninit[T](a)
+	if err != nil {
+		return Ptr[T]{}, err
+	}
+	*p.p = value
+	return p, nil
+}
+
+// SliceFrom allocates a Slice holding a copy of values. Empty values return the
+// empty Slice.
+func SliceFrom[T any](a Allocator, values []T) (Slice[T], error) {
+	s, err := MakeSliceUninit[T](a, len(values))
+	if err != nil {
+		return Slice[T]{}, err
+	}
+	copy(s.Elems(), values)
+	return s, nil
 }
 
 func makeSlice[T any](a Allocator, n, align int, f fill) (Slice[T], error) {

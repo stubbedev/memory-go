@@ -406,3 +406,69 @@ func TestViewAliasesSlice(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNewFromAndSliceFromCopyTheirInput(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	p, err := memory.NewFrom(a, point{X: 3, Y: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *p.Value() != (point{X: 3, Y: 4}) {
+		t.Fatalf("NewFrom = %+v", *p.Value())
+	}
+	if err := memory.Free(a, p); err != nil {
+		t.Fatal(err)
+	}
+	values := []int{1, 2, 3}
+	s, err := memory.SliceFrom(a, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values[0] = 9
+	if got := s.Elems(); len(got) != 3 || got[0] != 1 || got[2] != 3 {
+		t.Fatalf("SliceFrom = %v", got)
+	}
+	if err := memory.FreeSlice(a, s); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := memory.SliceFrom[int](a, nil)
+	if err != nil || empty.Len() != 0 {
+		t.Fatalf("SliceFrom(nil) = %d, %v", empty.Len(), err)
+	}
+	if _, err := memory.NewFrom(a, "holds a pointer"); !errors.Is(err, memory.ErrHoldsPointers) {
+		t.Fatalf("NewFrom of a pointer type: %v", err)
+	}
+}
+
+func TestMakeSliceAlignedUninitDoesNotClear(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	const size = 4 << 10
+	s, err := memory.MakeSliceAlignedUninit[byte](a, size, size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr := uintptr(unsafe.Pointer(&s.Elems()[0])); addr%size != 0 {
+		t.Fatalf("address %#x not aligned", addr)
+	}
+	if _, err := memory.MakeSliceAlignedUninit[byte](a, 8, 3); !errors.Is(err, memory.ErrAlignment) {
+		t.Fatalf("bad alignment: %v", err)
+	}
+	s.Elems()[100] = 0xab
+	if err := memory.FreeSlice(a, s); err != nil {
+		t.Fatal(err)
+	}
+	again, err := memory.MakeSliceAlignedUninit[byte](a, size, size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := again.Elems()[100]; got != 0xab {
+		t.Fatalf("reused buffer byte = %#x, want it left uncleared", got)
+	}
+	if err := memory.FreeSlice(a, again); err != nil {
+		t.Fatal(err)
+	}
+}
