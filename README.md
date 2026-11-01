@@ -142,12 +142,21 @@ An `Index[T]` names an element in four bytes and stays meaningful wherever the
 region is mapped. `vector.NewStable` gives a vector the same property. Regions are
 checked for bounds only.
 
+### Prefaulting
+
+`Populate` and `Region.Populate` make memory resident in one batch, so a
+latency-sensitive section takes no page faults on it. Contents do not change.
+
 ### The runtime
 
 The Go runtime cannot see off-heap memory, so `GOMEMLIMIT` alone lets a process
 overshoot. `SyncMemoryLimit` sets the runtime's limit to a total minus what your
 allocators hold committed; call it periodically. `SetProfile` records the call
 stack of every live allocation in a `pprof` profile, for finding leaks.
+
+For the final binary, profile-guided optimisation (`default.pgo`, see `go help
+build`) inlines this module's hot paths past the normal budget, including the
+liveness checks on handles.
 
 ## Panics instead of corruption
 
@@ -206,11 +215,12 @@ to the OS, and `Close` releases everything at once.
 | Package | What it is |
 | --- | --- |
 | `memory` | Allocators, `Region`, and the `Ptr`, `Ref`, `Slice`, `View`, `Index` and `String` handles |
-| `vector` | Growable slice: `Push`, `Pop`, `At`, `Ptr`, `Set`, `RemoveAt`, `DeleteFunc`, `Truncate`, `Reserve`, `Clip`, `All`; `NewStable` never moves |
-| `hashmap` | Swiss table: `Map` for comparable keys with an optional `Hasher` such as `Int`, `Strings` for text keys looked up without allocating; capacity hint, `Clip` |
+| `vector` | Growable slice: `Push`, `Pop`, `At`, `Ptr`, `Set`, `RemoveAt`, `DeleteFunc`, `Truncate`, `Reserve`, `Clip`, `All`, and `Append` for bulk copies; `NewStable` never moves |
+| `hashmap` | Swiss table: `Map` for comparable keys with an optional `Hasher` such as `Int`, `Strings` for text keys looked up without allocating; capacity hint, `Clip`, and `Map.GetMany` for batched lookups that overlap their cache misses |
 | `btree` | Ordered map with `Min`, `Max`, `All` and `From` |
 | `intern` | One copy of each distinct string, named by a 4-byte `Symbol` |
 | `bufpool` | Recycled byte buffers of power-of-two sizes, aligned for direct I/O |
+| `ring` | Bounded lock-free queue from one goroutine to one other |
 | `linkedlist` | Doubly linked list in one pooled node vector linked by index; freed nodes are reused, `Clip` compacts |
 | `minheap` | Binary heap ordered by a `less` func, with `DeleteFunc` and `Clip` |
 | `typedarena` | Chunked bump allocator for one type, handing out `Ref`s; `Reset` reuses its warm chunks, `Free` releases them |
