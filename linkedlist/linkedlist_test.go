@@ -6,8 +6,9 @@ import (
 	"testing"
 
 	memory "github.com/stubbedev/memory-go"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/internal/testkit"
 	"github.com/stubbedev/memory-go/linkedlist"
+	"github.com/stubbedev/memory-go/memtest"
 )
 
 func values[T any](l *linkedlist.List[T]) []T {
@@ -27,7 +28,7 @@ func TestRejectsPointerElements(t *testing.T) {
 }
 
 func FuzzMatchesSlice(f *testing.F) {
-	f.Add(memtest.Seed(5, 1<<15))
+	f.Add(testkit.Seed(5, 1<<15))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		l, err := linkedlist.New[uint64](memtest.Local(t))
@@ -35,7 +36,7 @@ func FuzzMatchesSlice(f *testing.F) {
 			t.Fatal(err)
 		}
 		defer l.Free()
-		ops := memtest.NewOps(data)
+		ops := testkit.NewOps(data)
 		var model []uint64
 		for step := 0; ops.More(); step++ {
 			switch op := ops.Int(11); {

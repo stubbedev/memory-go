@@ -8,7 +8,8 @@ import (
 
 	memory "github.com/stubbedev/memory-go"
 	"github.com/stubbedev/memory-go/btree"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/internal/testkit"
+	"github.com/stubbedev/memory-go/memtest"
 )
 
 func newTree(t testing.TB, a memory.Allocator) *btree.Tree[uint64, uint64] {
@@ -131,7 +132,7 @@ func TestFreeReleasesEverything(t *testing.T) {
 }
 
 func FuzzMatchesModel(f *testing.F) {
-	f.Add(memtest.Seed(11, 1<<16))
+	f.Add(testkit.Seed(11, 1<<16))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		a := &memory.Local{}
@@ -141,7 +142,7 @@ func FuzzMatchesModel(f *testing.F) {
 			t.Fatal(err)
 		}
 		model := map[uint64]uint64{}
-		ops := memtest.NewOps(data)
+		ops := testkit.NewOps(data)
 		for ops.More() {
 			key := ops.Uint64() % 2048
 			switch ops.Int(5) {

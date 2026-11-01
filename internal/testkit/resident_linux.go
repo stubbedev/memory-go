@@ -1,4 +1,4 @@
-package memtest
+package testkit
 
 import (
 	"fmt"

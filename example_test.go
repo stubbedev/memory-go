@@ -104,7 +104,7 @@ func ExampleArena() {
 }
 
 func ExampleRegion() {
-	r, err := memory.NewRegion[int64](1 << 30)
+	r, err := memory.NewRegion[int64](1 << 24)
 	if err != nil {
 		panic(err)
 	}

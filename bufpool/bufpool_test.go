@@ -7,7 +7,7 @@ import (
 
 	memory "github.com/stubbedev/memory-go"
 	"github.com/stubbedev/memory-go/bufpool"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/memtest"
 )
 
 func TestSizesAndAlignment(t *testing.T) {

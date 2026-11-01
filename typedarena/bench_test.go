@@ -3,7 +3,7 @@ package typedarena_test
 import (
 	"testing"
 
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/memtest"
 	"github.com/stubbedev/memory-go/typedarena"
 )
 

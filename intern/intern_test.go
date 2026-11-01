@@ -7,7 +7,8 @@ import (
 
 	memory "github.com/stubbedev/memory-go"
 	"github.com/stubbedev/memory-go/intern"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/internal/testkit"
+	"github.com/stubbedev/memory-go/memtest"
 )
 
 func TestSameTextSameSymbol(t *testing.T) {
@@ -71,7 +72,7 @@ func TestLongAndEmptyStrings(t *testing.T) {
 }
 
 func FuzzMatchesModel(f *testing.F) {
-	f.Add(memtest.Seed(7, 1<<14))
+	f.Add(testkit.Seed(7, 1<<14))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		a := &memory.Local{}
@@ -81,7 +82,7 @@ func FuzzMatchesModel(f *testing.F) {
 			t.Fatal(err)
 		}
 		model := map[string]intern.Symbol{}
-		ops := memtest.NewOps(data)
+		ops := testkit.NewOps(data)
 		for ops.More() {
 			var raw [8]byte
 			binary.LittleEndian.PutUint64(raw[:], ops.Uint64()%1024)

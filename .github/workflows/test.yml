@@ -40,6 +40,20 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -race ./...
 
+  test-32bit:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+      GOARCH: "386"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+
   cross-build:
     runs-on: ubuntu-latest
     strategy:
@@ -86,6 +100,9 @@ jobs:
       fail-fast: false
       matrix:
         target:
+          - .:FuzzLocal
+          - .:FuzzShared
+          - .:FuzzArena
           - vector:FuzzMatchesSlice
           - hashmap:FuzzMatchesMap
           - hashmap:FuzzStringsMatchesMap
@@ -104,4 +121,4 @@ jobs:
       - name: Fuzz for one minute
         env:
           TARGET: ${{ matrix.target }}
-        run: go test "./${TARGET%%:*}" -run='^$' -fuzz="^${TARGET#*:}\$" -fuzztime=1m
+        run: go test "./${TARGET%%:*}" -run='^$' -fuzz="^${TARGET#*:}\$" -fuzztime=1m -fuzzminimizetime=5x

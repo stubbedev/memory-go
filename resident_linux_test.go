@@ -7,7 +7,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	memory "github.com/stubbedev/memory-go"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/memtest"
 )
 
 func resident(t *testing.T, b []byte) int {

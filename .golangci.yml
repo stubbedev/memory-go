@@ -39,7 +39,7 @@ linters:
   exclusions:
     generated: lax
     rules:
-      - path: (_test\.go|^internal/memtest/)
+      - path: (_test\.go|^internal/testkit/)
         linters:
           - errcheck
           - gosec

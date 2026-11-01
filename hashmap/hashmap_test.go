@@ -7,7 +7,8 @@ import (
 
 	memory "github.com/stubbedev/memory-go"
 	"github.com/stubbedev/memory-go/hashmap"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/internal/testkit"
+	"github.com/stubbedev/memory-go/memtest"
 )
 
 type key struct {
@@ -55,7 +56,7 @@ func TestCapacityAvoidsGrowth(t *testing.T) {
 }
 
 func FuzzMatchesMap(f *testing.F) {
-	f.Add(memtest.Seed(3, 1<<16))
+	f.Add(testkit.Seed(3, 1<<16))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		m, err := hashmap.New[key, uint64](memtest.Local(t), 0)
@@ -63,7 +64,7 @@ func FuzzMatchesMap(f *testing.F) {
 			t.Fatal(err)
 		}
 		defer m.Free()
-		ops := memtest.NewOps(data)
+		ops := testkit.NewOps(data)
 		randomKey := func() key { return key{A: uint16(ops.Int(600)), B: [2]int8{int8(ops.Int(3))}} }
 		model := map[key]uint64{}
 		for step := 0; ops.More(); step++ {

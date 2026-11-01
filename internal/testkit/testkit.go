@@ -1,29 +1,11 @@
-// Package memtest provides test helpers shared by the memory-go packages.
-package memtest
+// Package testkit provides the fuzz and benchmark helpers shared by this module's tests.
+package testkit
 
 import (
 	"encoding/binary"
 	"math/rand/v2"
 	"testing"
-
-	memory "github.com/stubbedev/memory-go"
 )
-
-// Local returns an allocator that fails t if anything allocated from it is
-// still live when t ends, and closes it.
-func Local(t testing.TB) *memory.Local {
-	t.Helper()
-	a := &memory.Local{}
-	t.Cleanup(func() {
-		if s := a.Stats(); s.Live != 0 {
-			t.Errorf("leaked %d allocations (%d bytes)", s.Live, s.Bytes)
-		}
-		if err := a.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	})
-	return a
-}
 
 // Seed returns n reproducible pseudo-random bytes for a fuzz seed corpus.
 func Seed(seed uint64, n int) []byte {

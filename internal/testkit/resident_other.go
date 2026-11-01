@@ -1,6 +1,6 @@
 //go:build !linux
 
-package memtest
+package testkit
 
 // Resident returns the process's resident memory in bytes, or 0 where that is
 // unavailable.

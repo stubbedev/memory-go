@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	memory "github.com/stubbedev/memory-go"
-	"github.com/stubbedev/memory-go/internal/memtest"
+	"github.com/stubbedev/memory-go/memtest"
 )
 
 func TestDoubleFreePanics(t *testing.T) {
