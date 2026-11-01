@@ -3,10 +3,9 @@
 Typed manual memory management for Go without cgo: values and containers that
 live outside the Go heap, so the garbage collector never scans or frees them.
 
-Small allocations come from [modernc.org/memory](https://pkg.go.dev/modernc.org/memory),
-a pure Go allocator that maps pages from the OS (`mmap`, `VirtualAlloc`)
-directly; large ones are mapped from the OS by memory-go itself (see
-[Reservation](#reservation)). `CGO_ENABLED=0` builds work. The API follows
+Memory comes straight from the OS (`mmap`, `VirtualAlloc`) through an allocator
+written for this module: size-classed spans for small values, a mapping each for
+large ones. `CGO_ENABLED=0` builds work. The API follows
 [mm-go](https://github.com/joetifa2003/mm-go), which does the same on top of C
 `calloc` through cgo, but misuse panics instead of corrupting memory.
 
@@ -52,22 +51,33 @@ balanced binary tree of 2²⁰ − 1 nodes alive (`just bench`, linux/amd64, 8 t
 | `*goNode` on the Go heap | 3.64 ms |
 | `memory.Ptr[offNode]` off-heap | 0.13 ms |
 
-Allocation speed depends on which tool you use. General-purpose `New` and
-`Free` go through modernc's size classes and are slower than Go's `new`. The
-typed `pool` and `typedarena` skip that: once a chunk has room, getting a value
-is a free-list pop or a bump of an index, and they beat `new` even with the
-misuse guards on. Per allocation (`just bench`, linux/amd64, 8 threads, this
-machine is noisy so read these as rough):
+Allocation speed depends on which tool you use. General-purpose `New` and `Free`
+cost more than Go's `new`. The typed `pool` and `typedarena` skip the allocator:
+once a chunk has room, getting a value is a free-list pop or a bump of an index.
+Per allocation (`just bench`, linux/amd64, 12 threads; this machine is noisy, so
+read these as rough):
 
-| Operation | Checked | `memory_unchecked` | Go `new` |
+| Operation | Checked | `memory_unchecked` | Go |
 | --- | --- | --- | --- |
-| `pool` `Get` + `Put` | 4–5 ns | 4 ns | 10 ns |
-| `typedarena` `Alloc`, `Reset` every 1024 | 4.2 ns | 3.5 ns | 12.5 ns |
-| `New` + `Free` | 43 ns | 21–26 ns | 10 ns |
-| hashmap set + get | 36–45 ns | 36 ns | 19–26 ns (map) |
+| `pool` `Get` + `Put` | 9 ns | 5 ns | 15 ns (`new`) |
+| `typedarena` `Alloc`, `Reset` every 1024 | 13 ns | 5 ns | 15 ns (`new`) |
+| `Arena` `New`, `Reset` every 1024 | 32 ns | 20 ns | 15 ns (`new`) |
+| `New` + `Free` | 73 ns | 34 ns | 15 ns (`new`) |
+| `hashmap` set + get | 164 ns | 77 ns | 80 ns (`map`) |
+| `hashmap` set + get, `Int` hasher, presized | 79 ns | 70 ns | |
 
-Go's numbers leave out the GC work its allocations cause later; the off-heap
-ones have none.
+Go's numbers leave out the GC work its allocations cause later; the off-heap ones
+have none.
+
+Memory (`u64`-to-`u64`, or a 24-byte node):
+
+| | memory-go | Go |
+| --- | --- | --- |
+| `hashmap` entry | 34 B at 8M entries, 19–39 B in general | 47 B |
+| `New` of a 24-byte node | 24 B | 24 B plus GC headroom |
+| `pool` of a 24-byte node | 32 B, 24 B unchecked | |
+| Node with two 4-byte `Index` links | 16 B | |
+| Vector pushed to 1 GiB | 1.05 GB peak RSS | 3.6 GB (`append`) |
 
 ## Handles
 
@@ -83,6 +93,8 @@ there:
 | `Slice[T]` | `n` consecutive `T`s | `MakeSlice`, `ResizeSlice` | `FreeSlice` |
 | `String` | UTF-8 bytes | `NewString`, `AppendString` | `FreeString` |
 | `Ref[T]` | nothing | `Ptr.Ref`, `Slice.Ref`, `typedarena` | its owner |
+| `View[T]` | nothing | `Slice.View` | its owner |
+| `Index[T]` | nothing, in 4 bytes | `Region.Grow`, `Region.IndexAt` | its `Region` |
 | `pool.Item[T]` | one `T` | `Pool.Get` | `Pool.Put` |
 
 `Ptr.Value`, `Slice.Elems` and `String.String` hand out ordinary Go pointers,
@@ -91,23 +103,58 @@ resized and must not outlive it.
 
 ## Reservation
 
-An allocation of up to 8 KiB with its header (or one OS page, if larger) takes
-a slot of the next power of two in modernc's size classes. Anything larger
-gets its own mapping rounded up to whole OS pages, so it reserves less than
-one page beyond its size and header: a 1024×1024 RGBA buffer (4 MiB) reserves
-4 MiB plus one page, not the 8 MiB a power-of-two class would. `Stats.Bytes`
-reports these reservations.
+An allocation of up to 8 KiB takes a slot from a size class, four to a doubling,
+so rounding wastes at most a quarter. Slots of a power-of-two size are aligned to
+it, up to 4 KiB. `MakeSliceAligned` asks for an alignment, and `NewUninit`,
+`MakeSliceUninit` and `Pool.GetUninit` skip zeroing a value about to be overwritten.
 
-Freed large mappings are kept for reuse by an allocation of the same page
-count, up to the allocator's peak of live large bytes plus 4 MiB; beyond that
-the oldest are unmapped. The newest 4 MiB of each size (at least one mapping)
-stay committed; older ones are decommitted except for their first page, which
-keeps the freed header readable. `Trim` unmaps every kept mapping.
+Anything larger gets its own mapping rounded up to whole OS pages, starting on a
+page: a 1024×1024 RGBA buffer (4 MiB) reserves 4 MiB plus at most one page.
+`Stats.Bytes` reports these reservations. On Linux, growing one remaps it instead
+of copying, so no moment holds both copies, and shrinking unmaps the tail in place
+on every Unix.
+
+Freed large mappings are kept for reuse by an allocation of the same page count,
+up to the allocator's peak of live large bytes plus 4 MiB; beyond that the oldest
+are unmapped. Retired mappings stay committed only within a budget: the largest of
+4 MiB, an eighth of live large bytes, and the newest mapping if it is at most 32
+MiB, so a frame buffer stays warm while the old doublings of a growing vector do not
+stay resident. The rest are decommitted except for their last page, which keeps
+the freed trailer readable, and read as zero without being touched when reused.
+`Trim` returns every retained mapping and empty span. `Stats` covers what is
+allocated; `Footprint` covers what is held from the OS, which is what `Trim` and
+memory limits care about.
+
+### Huge pages
+
+`UseHugePages` aligns later allocations of at least 2 MiB to 2 MiB and asks Linux
+for huge pages, including where THP is set to `madvise`. Pointer chasing over 1 GiB
+took 105 ns per step on 4 KiB pages and about 75 ns on huge pages here. It is
+opt-in because such memory can become resident in 2 MiB steps, first touch can take
+much longer when physical memory is fragmented, and growing an allocation copies
+instead of remapping. `Region.UseHugePages` does the same for a region.
+
+### Regions
+
+`Region[T]` reserves address space for up to 2³²−2 elements and uses memory only
+for those it holds, so it grows without ever moving and pointers into it stay valid.
+An `Index[T]` names an element in four bytes and stays meaningful wherever the
+region is mapped. `vector.NewStable` gives a vector the same property. Regions are
+checked for bounds only.
+
+### The runtime
+
+The Go runtime cannot see off-heap memory, so `GOMEMLIMIT` alone lets a process
+overshoot. `SyncMemoryLimit` sets the runtime's limit to a total minus what your
+allocators hold committed; call it periodically. `SetProfile` records the call
+stack of every live allocation in a `pprof` profile, for finding leaks.
 
 ## Panics instead of corruption
 
-Every allocation carries a 16-byte header recording its allocator, its size
-and whether it is live. These panic at the point of the mistake:
+Every small allocation has an entry in a side table of its span, recording its
+size and whether it is live, and every span records its allocator; a large
+allocation has a 16-byte trailer. Neither sits between values, so checked builds
+use the same slots as unchecked ones. These panic at the point of the mistake:
 
 - freeing twice, or freeing, resizing or reading a handle that was already
   resized, even when the resize kept the same address
@@ -117,22 +164,24 @@ and whether it is live. These panic at the point of the mistake:
 - using one `Local` from several goroutines at once
 - out-of-range indices in every container
 
-Not caught: a stale handle whose memory was freed and has since been handed
-out again, `Ref`s, and Go pointers or slices obtained from a handle and kept
-after it was freed. After `Close` or `Trim`, or once a freed large mapping is
-unmapped to stay within the retention budget, reading through an old handle
-faults instead of panicking, since its pages are unmapped. Freeing or
-resizing a large allocation is checked against the allocator's own table of
-live mappings, so a stale or foreign large handle panics even then, and in
-`memory_unchecked` builds too.
+Not caught: a stale handle whose memory was freed and has since been handed out
+again, `Ref`s, `View`s and `Index`es, and Go pointers or slices obtained from a
+handle and kept after it was freed. An `Arena` panics on a handle past its mark but
+not on one whose space was handed out again, and does not detect a double free.
+Reading through an old handle faults instead of panicking once its pages are
+unmapped: after `Close` or `Trim`, once a freed large mapping leaves the retention
+budget, after a large resize that remapped or shrank it, or on Windows once a span
+has been decommitted. Freeing or resizing a large allocation is checked against the
+allocator's own table of live mappings, so a stale or foreign large handle panics
+even then, and in `memory_unchecked` builds too.
 
 Allocation failures (out of memory, negative or overflowing sizes, pointer
 types) come back as errors.
 
 ### Opting out
 
-Build with `-tags memory_unchecked` to compile the guards out: no header, no
-liveness or owner checks and no concurrency guard. Misuse then corrupts memory
+Build with `-tags memory_unchecked` to compile the guards out: no side table or
+trailer, no liveness or owner checks and no concurrency guard. Misuse then corrupts memory
 silently instead of panicking, so test without the tag first. The
 pointer-type check and `Stats` remain. Only the final binary's build decides,
 so a library depending on memory-go cannot turn the checks off for its users.
@@ -144,27 +193,33 @@ saves.
 | Type | Use |
 | --- | --- |
 | `memory.Local` | One goroutine. Zero value is ready; must not be copied after use. |
-| `memory.Shared` | Several goroutines; a mutex serialises every call. |
+| `memory.Shared` | Several goroutines. Each call works in a shard of its own, and memory freed on another shard returns to its owner without a lock. |
+| `memory.Arena` | One goroutine. Mixed types bump-allocated from a parent's spans; `Mark`, `Release` and `Reset` free in bulk. |
 
-Both satisfy `memory.Allocator`, which every function and container takes.
-`Stats` reports live allocations and bytes, `Trim` returns retained empty pages
+All satisfy `memory.Allocator`, which every function and container takes, so a
+hashmap can live in an arena and vanish with it. `Stats` reports live allocations
+and bytes, `Footprint` what is held from the OS, `Trim` returns retained empty pages
 to the OS, and `Close` releases everything at once.
 
 ## Packages
 
 | Package | What it is |
 | --- | --- |
-| `memory` | Allocators and the `Ptr`, `Ref`, `Slice` and `String` handles |
-| `vector` | Growable slice: `Push`, `Pop`, `At`, `Ptr`, `Set`, `RemoveAt`, `DeleteFunc`, `Truncate`, `Reserve`, `Clip`, `All` |
-| `hashmap` | Linear probing with backward-shift deletion and stored hashes; capacity hint, `Clip` |
+| `memory` | Allocators, `Region`, and the `Ptr`, `Ref`, `Slice`, `View`, `Index` and `String` handles |
+| `vector` | Growable slice: `Push`, `Pop`, `At`, `Ptr`, `Set`, `RemoveAt`, `DeleteFunc`, `Truncate`, `Reserve`, `Clip`, `All`; `NewStable` never moves |
+| `hashmap` | Swiss table: `Map` for comparable keys with an optional `Hasher` such as `Int`, `Strings` for text keys looked up without allocating; capacity hint, `Clip` |
+| `btree` | Ordered map with `Min`, `Max`, `All` and `From` |
+| `intern` | One copy of each distinct string, named by a 4-byte `Symbol` |
+| `bufpool` | Recycled byte buffers of power-of-two sizes, aligned for direct I/O |
 | `linkedlist` | Doubly linked list in one pooled node vector linked by index; freed nodes are reused, `Clip` compacts |
 | `minheap` | Binary heap ordered by a `less` func, with `DeleteFunc` and `Clip` |
 | `typedarena` | Chunked bump allocator for one type, handing out `Ref`s; `Reset` reuses its warm chunks, `Free` releases them |
 | `pool` | Free-list allocator for one type: `Get` and `Put` individual values without touching the allocator |
 
 Containers are not safe for concurrent use, even on a `Shared` allocator.
-Adding or removing entries of a `hashmap` or `linkedlist` while ranging over
-`All`, `Keys` or `Values` panics instead of reading freed or reused slots.
+`memory.String` is not comparable, because `==` could only compare addresses; use
+`hashmap.Strings` to key by text. Adding or removing entries of a `hashmap`, `btree`
+or `linkedlist` while ranging over `All`, `From`, `Keys` or `Values` panics instead of reading freed or reused slots.
 
 ## Recipes
 
@@ -210,5 +265,5 @@ copyloopvar, errorlint, gosec, intrange, misspell, modernize, nolintlint,
 perfsprint, revive (default rules plus `exported`), unconvert, unparam,
 usestdlibvars and whitespace, with gofumpt and gci as formatters. No issue
 caps: every finding fails the build. gosec's unsafe audit (G103) is waived only
-for `allocator.go`, `memory.go` and `string.go`, the boundary between typed
-values and raw memory.
+for the files that form the boundary between typed values and raw memory, listed in
+`.golangci.yml`.

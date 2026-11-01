@@ -88,6 +88,9 @@ jobs:
         target:
           - vector:FuzzMatchesSlice
           - hashmap:FuzzMatchesMap
+          - hashmap:FuzzStringsMatchesMap
+          - btree:FuzzMatchesModel
+          - intern:FuzzMatchesModel
           - linkedlist:FuzzMatchesSlice
           - minheap:FuzzMatchesSortedSlice
           - pool:FuzzMatchesModel
