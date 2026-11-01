@@ -16,3 +16,8 @@ func osDecommit(p unsafe.Pointer, size int) error {
 func osGrow(unsafe.Pointer, int, int) (unsafe.Pointer, bool, error) { return nil, false, nil }
 
 func osAdviseHuge(unsafe.Pointer, int) error { return nil }
+
+func osPopulate(p unsafe.Pointer, size int) error {
+	touchPages(p, size)
+	return nil
+}

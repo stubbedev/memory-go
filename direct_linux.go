@@ -26,3 +26,12 @@ func osAdviseHuge(p unsafe.Pointer, size int) error {
 	}
 	return err
 }
+
+func osPopulate(p unsafe.Pointer, size int) error {
+	err := unix.Madvise(unsafe.Slice((*byte)(p), size), unix.MADV_POPULATE_WRITE)
+	if errors.Is(err, unix.EINVAL) {
+		touchPages(p, size)
+		return nil
+	}
+	return err
+}

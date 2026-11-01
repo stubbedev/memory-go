@@ -114,3 +114,23 @@ func TestLargeGrowthRemapsInsteadOfCopying(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPopulateMakesEveryPageResident(t *testing.T) {
+	t.Parallel()
+
+	a := memtest.Local(t)
+	const n = 16 << 20
+	s, err := memory.MakeSlice[byte](a, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.Populate(s); err != nil {
+		t.Fatal(err)
+	}
+	if got := resident(t, s.Elems()); got < n {
+		t.Fatalf("resident %d of %d", got, n)
+	}
+	if err := memory.FreeSlice(a, s); err != nil {
+		t.Fatal(err)
+	}
+}
