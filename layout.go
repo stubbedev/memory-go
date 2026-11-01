@@ -110,3 +110,8 @@ func sizeOf[T any](n int) int {
 	var zero T
 	return max(n*int(unsafe.Sizeof(zero)), 1)
 }
+
+func alignOf[T any]() int {
+	var zero T
+	return int(unsafe.Alignof(zero))
+}

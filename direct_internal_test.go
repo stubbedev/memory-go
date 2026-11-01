@@ -17,7 +17,7 @@ func TestDirectRetentionStaysWithinBudget(t *testing.T) {
 	const size = 1 << 20
 	bases := make([]unsafe.Pointer, 0, 32)
 	for range 32 {
-		base, reserved, err := d.alloc(size)
+		base, reserved, err := d.alloc(size, zeroed)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,7 +67,7 @@ func TestDirectEvictsOldestBeyondBudget(t *testing.T) {
 		}
 	})
 	const size = 8 << 20
-	first, _, err := d.alloc(size)
+	first, _, err := d.alloc(size, zeroed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestDirectEvictsOldestBeyondBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 4 {
-		base, _, err := d.alloc(size + osPageSize)
+		base, _, err := d.alloc(size+osPageSize, zeroed)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -101,13 +101,13 @@ func TestDirectKeepsOldDoublingsOutOfCommittedMemory(t *testing.T) {
 		}
 	})
 	size := 1 << 20
-	base, _, err := d.alloc(size)
+	base, _, err := d.alloc(size, zeroed)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for size < 512<<20 {
 		size *= 2
-		next, _, err := d.alloc(size)
+		next, _, err := d.alloc(size, zeroed)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -2,20 +2,19 @@ package memory
 
 import (
 	"errors"
-	"fmt"
-	"math"
 	"sync"
+	"sync/atomic"
 	"unsafe"
-
-	modernc "modernc.org/memory"
 )
 
 // Allocator is the memory source every function and container in this module
 // takes. It is implemented by *Local and *Shared only.
 type Allocator interface {
-	calloc(size int) (unsafe.Pointer, error)
+	alloc(size, align int, f fill) (unsafe.Pointer, error)
 	realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error)
 	free(p unsafe.Pointer, size int) error
+	Stats() Stats
+	Footprint() Footprint
 }
 
 // Stats describes the allocations an allocator currently holds.
@@ -26,157 +25,123 @@ type Stats struct {
 	Bytes int
 }
 
+// Footprint describes the address space and memory an allocator holds from
+// the operating system, whether or not allocations currently use it.
+type Footprint struct {
+	// Mapped is the address space held, most of which may not be backed by
+	// memory.
+	Mapped int
+	// Committed is an upper bound on the bytes that may be resident: everything
+	// handed out so far and not yet returned to the operating system.
+	Committed int
+	// Retained is the part of Mapped kept for reuse and not currently allocated.
+	Retained int
+}
+
+func (f Footprint) plus(o Footprint) Footprint {
+	return Footprint{Mapped: f.Mapped + o.Mapped, Committed: f.Committed + o.Committed, Retained: f.Retained + o.Retained}
+}
+
+func (s Stats) plus(o Stats) Stats {
+	return Stats{Live: s.Live + o.Live, Bytes: s.Bytes + o.Bytes}
+}
+
 type noCopy struct{}
 
 func (*noCopy) Lock()   {}
 func (*noCopy) Unlock() {}
+
+func allocate(h *heap, d *direct, size, align int, f fill) (unsafe.Pointer, error) {
+	if size > smallMax {
+		return d.make(size, f)
+	}
+	return h.alloc(size, classForAligned(size, align), f)
+}
+
+func deallocate(h *heap, d *direct, p unsafe.Pointer, size int) error {
+	if size > smallMax {
+		return d.release(p, size)
+	}
+	s := spanOf(p)
+	verifySlot(s, p, size, h.owner)
+	eraseSlot(s, p)
+	return h.release(s, p)
+}
+
+func reallocate(h *heap, d *direct, p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
+	if oldSize > smallMax && size > smallMax {
+		return d.resize(p, oldSize, size)
+	}
+	if oldSize > smallMax {
+		d.check(p, oldSize)
+	} else {
+		s := spanOf(p)
+		verifySlot(s, p, oldSize, h.owner)
+		if size <= int(s.slot) && (2*size >= int(s.slot) || classFor(size) == s.class) {
+			clearFrom(p, oldSize, size)
+			stampSlot(s, p, size)
+			return p, nil
+		}
+	}
+	moved, err := allocate(h, d, size, wordAlign, zeroed)
+	if err != nil {
+		return nil, err
+	}
+	n := min(oldSize, size)
+	copy(unsafe.Slice((*byte)(moved), n), unsafe.Slice((*byte)(p), n))
+	return moved, deallocate(h, d, p, oldSize)
+}
 
 // Local is an Allocator for a single goroutine. Its zero value is ready for
 // use, and it must not be copied after first use. Using it from several
 // goroutines at once panics, unless built with memory_unchecked; use Shared
 // for that.
 type Local struct {
-	_     noCopy
-	g     guard
-	a     modernc.Allocator
-	d     direct
-	stats Stats
+	_ noCopy
+	g guard
+	h heap
+	d direct
 }
 
-func withHeader(size int) (int, error) {
-	if size > math.MaxInt-headerSize {
-		return 0, ErrTooLarge
-	}
-	return size + headerSize, nil
-}
-
-func baseOf(p unsafe.Pointer) unsafe.Pointer { return unsafe.Add(p, -headerSize) }
-
-func (l *Local) acquire(total int) (unsafe.Pointer, int, error) {
-	if isDirect(total) {
-		return l.d.alloc(total)
-	}
-	base, err := l.a.UnsafeCalloc(total)
-	if err != nil {
-		return nil, 0, err
-	}
-	return base, modernc.UnsafeUsableSize(base), nil
-}
-
-func (l *Local) release(base unsafe.Pointer, total int) error {
-	if isDirect(total) {
-		return l.d.free(base)
-	}
-	return l.a.UnsafeFree(base)
-}
-
-func (l *Local) admit(base unsafe.Pointer, reserved, size int) unsafe.Pointer {
-	l.stats.Live++
-	l.stats.Bytes += reserved - headerSize
-	return l.g.stamp(base, size)
-}
-
-func (l *Local) retire(p unsafe.Pointer, size, total int) (unsafe.Pointer, int) {
-	base := baseOf(p)
-	var reserved int
-	if isDirect(total) {
-		var ok bool
-		if reserved, ok = l.d.reserved(base); !ok {
-			panic(fmt.Sprintf("memory: %#x is not a live allocation of this allocator: already freed, from another allocator, or never allocated", uintptr(p)))
-		}
-		l.g.verify(p, size)
-	} else {
-		l.g.verify(p, size)
-		reserved = modernc.UnsafeUsableSize(base)
-	}
-	l.stats.Live--
-	l.stats.Bytes -= reserved - headerSize
-	return base, reserved
-}
-
-func (l *Local) calloc(size int) (unsafe.Pointer, error) {
+func (l *Local) alloc(size, align int, f fill) (unsafe.Pointer, error) {
 	l.g.enter()
 	defer l.g.exit()
-	total, err := withHeader(size)
-	if err != nil {
-		return nil, err
-	}
-	base, reserved, err := l.acquire(total)
-	if err != nil {
-		return nil, err
-	}
-	return l.admit(base, reserved, size), nil
+	return allocate(&l.h, &l.d, size, align, f)
 }
 
 func (l *Local) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
 	l.g.enter()
 	defer l.g.exit()
-	oldTotal, err := withHeader(oldSize)
-	if err != nil {
-		return nil, err
-	}
-	total, err := withHeader(size)
-	if err != nil {
-		return nil, err
-	}
-	base, reserved := l.retire(p, oldSize, oldTotal)
-	if !isDirect(oldTotal) && !isDirect(total) {
-		moved, err := l.a.UnsafeRealloc(base, total)
-		if err != nil {
-			l.admit(base, reserved, oldSize)
-			return nil, err
-		}
-		q := l.admit(moved, modernc.UnsafeUsableSize(moved), size)
-		clearFrom(q, oldSize, size)
-		return q, nil
-	}
-	if isDirect(oldTotal) && isDirect(total) {
-		if rounded, err := pageRound(total); err == nil && rounded == reserved {
-			q := l.admit(base, reserved, size)
-			clearFrom(q, oldSize, size)
-			return q, nil
-		}
-	}
-	moved, movedReserved, err := l.acquire(total)
-	if err != nil {
-		l.admit(base, reserved, oldSize)
-		return nil, err
-	}
-	n := min(oldSize, size)
-	copy(unsafe.Slice((*byte)(unsafe.Add(moved, headerSize)), n), unsafe.Slice((*byte)(p), n))
-	q := l.admit(moved, movedReserved, size)
-	return q, l.release(base, oldTotal)
-}
-
-func clearFrom(p unsafe.Pointer, from, to int) {
-	if to > from {
-		clear(unsafe.Slice((*byte)(unsafe.Add(p, from)), to-from))
-	}
+	return reallocate(&l.h, &l.d, p, oldSize, size)
 }
 
 func (l *Local) free(p unsafe.Pointer, size int) error {
 	l.g.enter()
 	defer l.g.exit()
-	total, err := withHeader(size)
-	if err != nil {
-		return err
-	}
-	base, _ := l.retire(p, size, total)
-	return l.release(base, total)
+	return deallocate(&l.h, &l.d, p, size)
 }
 
 // Stats reports the allocations l currently holds.
 func (l *Local) Stats() Stats {
 	l.g.enter()
 	defer l.g.exit()
-	return l.stats
+	stats, _ := l.d.snapshot()
+	return stats.plus(l.h.stats)
+}
+
+// Footprint reports the memory l holds from the operating system.
+func (l *Local) Footprint() Footprint {
+	l.g.enter()
+	defer l.g.exit()
+	_, foot := l.d.snapshot()
+	return foot.plus(l.h.footprint())
 }
 
 // Trim returns retained empty pages to the operating system.
 func (l *Local) Trim() error {
 	l.g.enter()
 	defer l.g.exit()
-	return errors.Join(l.d.trim(), l.a.Trim())
+	return errors.Join(l.d.trimLocked(), l.h.trim())
 }
 
 // Close unmaps every page of l, invalidating everything allocated from it, and
@@ -184,55 +149,155 @@ func (l *Local) Trim() error {
 func (l *Local) Close() error {
 	l.g.enter()
 	defer l.g.exit()
-	l.g.reset()
-	l.stats = Stats{}
-	return errors.Join(l.d.close(), l.a.Close())
+	return errors.Join(l.d.closeLocked(), l.h.close())
 }
 
-// Shared is an Allocator safe for concurrent use: a mutex serialises every
-// call. Its zero value is ready for use. Containers built on it are still not
-// safe for concurrent use.
-type Shared struct {
+type shard struct {
 	mu sync.Mutex
-	l  Local
+	h  heap
 }
 
-func (s *Shared) calloc(size int) (unsafe.Pointer, error) {
+// Shared is an Allocator safe for concurrent use. Each goroutine works in a
+// shard of its own for the length of a call, so calls on different processors
+// do not contend, and memory freed on another shard goes back to its owner
+// without a lock. Its zero value is ready for use. Containers built on it are
+// still not safe for concurrent use.
+type Shared struct {
+	mu     sync.Mutex
+	d      direct
+	cache  sync.Pool
+	shards atomic.Pointer[[]*shard]
+	owner  uint32
+}
+
+func (s *Shared) shardAt(i uint32) *shard { return (*s.shards.Load())[i] }
+
+func (s *Shared) all() []*shard {
+	if list := s.shards.Load(); list != nil {
+		return *list
+	}
+	return nil
+}
+
+func (s *Shared) acquire() *shard {
+	if sh, ok := s.cache.Get().(*shard); ok {
+		sh.mu.Lock()
+		return sh
+	}
+	for _, sh := range s.all() {
+		if sh.mu.TryLock() {
+			return sh
+		}
+	}
+	return s.grow()
+}
+
+func (s *Shared) grow() *shard {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.l.calloc(size)
+	if s.owner == 0 {
+		s.owner = nextOwner()
+	}
+	old := s.all()
+	sh := &shard{}
+	sh.h.peers, sh.h.owner, sh.h.shard = s, s.owner, uint32(len(old))
+	sh.mu.Lock()
+	next := make([]*shard, len(old)+1)
+	copy(next, old)
+	next[len(old)] = sh
+	s.shards.Store(&next)
+	return sh
+}
+
+func (s *Shared) put(sh *shard) {
+	sh.mu.Unlock()
+	s.cache.Put(sh)
+}
+
+func (s *Shared) alloc(size, align int, f fill) (unsafe.Pointer, error) {
+	if size > smallMax {
+		return s.d.make(size, f)
+	}
+	sh := s.acquire()
+	defer s.put(sh)
+	return sh.h.alloc(size, classForAligned(size, align), f)
 }
 
 func (s *Shared) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.l.realloc(p, oldSize, size)
+	sh := s.acquire()
+	defer s.put(sh)
+	return reallocate(&sh.h, &s.d, p, oldSize, size)
 }
 
 func (s *Shared) free(p unsafe.Pointer, size int) error {
+	if size > smallMax {
+		return s.d.release(p, size)
+	}
+	sh := s.acquire()
+	defer s.put(sh)
+	return deallocate(&sh.h, &s.d, p, size)
+}
+
+func (s *Shared) lockAll() []*shard {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.l.free(p, size)
+	shards := s.all()
+	for _, sh := range shards {
+		sh.mu.Lock()
+	}
+	return shards
+}
+
+func (s *Shared) unlockAll(shards []*shard) {
+	for _, sh := range shards {
+		sh.mu.Unlock()
+	}
+	s.mu.Unlock()
 }
 
 // Stats reports the allocations s currently holds.
 func (s *Shared) Stats() Stats {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.l.Stats()
+	shards := s.lockAll()
+	defer s.unlockAll(shards)
+	stats, _ := s.d.snapshot()
+	for _, sh := range shards {
+		_ = sh.h.drain()
+		stats = stats.plus(sh.h.stats)
+	}
+	return stats
+}
+
+// Footprint reports the memory s holds from the operating system.
+func (s *Shared) Footprint() Footprint {
+	shards := s.lockAll()
+	defer s.unlockAll(shards)
+	_, foot := s.d.snapshot()
+	for _, sh := range shards {
+		foot = foot.plus(sh.h.footprint())
+	}
+	return foot
 }
 
 // Trim returns retained empty pages to the operating system.
 func (s *Shared) Trim() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.l.Trim()
+	shards := s.lockAll()
+	defer s.unlockAll(shards)
+	errs := []error{s.d.trimLocked()}
+	for _, sh := range shards {
+		errs = append(errs, sh.h.trim())
+	}
+	return errors.Join(errs...)
 }
 
 // Close unmaps every page of s, invalidating everything allocated from it, and
 // leaves s ready for reuse.
 func (s *Shared) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.l.Close()
+	shards := s.lockAll()
+	defer s.unlockAll(shards)
+	errs := []error{s.d.closeLocked()}
+	s.owner = nextOwner()
+	for _, sh := range shards {
+		errs = append(errs, sh.h.close())
+		sh.h.owner = s.owner
+	}
+	return errors.Join(errs...)
 }

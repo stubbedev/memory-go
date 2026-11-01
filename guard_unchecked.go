@@ -8,14 +8,23 @@ import "unsafe"
 // unless the build sets the memory_unchecked tag.
 const Checked = false
 
-const headerSize = 0
+const (
+	sideEntry   = 0
+	trailerSize = 0
+)
+
+func trailerOffset(size int) int { return size }
 
 func checkLive(unsafe.Pointer, int) {}
 
 type guard struct{}
 
-func (guard) enter()                                          {}
-func (guard) exit()                                           {}
-func (guard) reset()                                          {}
-func (guard) stamp(base unsafe.Pointer, _ int) unsafe.Pointer { return base }
-func (guard) verify(unsafe.Pointer, int)                      {}
+func (guard) enter() {}
+func (guard) exit()  {}
+
+func stampSlot(*span, unsafe.Pointer, int)          {}
+func verifySlot(*span, unsafe.Pointer, int, uint32) {}
+func eraseSlot(*span, unsafe.Pointer)               {}
+func stampTrailer(unsafe.Pointer, int)              {}
+func eraseTrailer(unsafe.Pointer, int)              {}
+func supersedeTrailer(unsafe.Pointer, int)          {}

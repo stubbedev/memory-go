@@ -74,7 +74,7 @@ func New[T any](a Allocator) (Ptr[T], error) {
 	if err != nil {
 		return Ptr[T]{}, err
 	}
-	p, err := a.calloc(size)
+	p, err := a.alloc(size, alignOf[T](), zeroed)
 	if err != nil {
 		return Ptr[T]{}, fmt.Errorf("memory: allocate %s: %w", reflect.TypeFor[T](), err)
 	}
@@ -100,7 +100,7 @@ func MakeSlice[T any](a Allocator, n int) (Slice[T], error) {
 	if err != nil || n == 0 {
 		return Slice[T]{}, err
 	}
-	p, err := a.calloc(size)
+	p, err := a.alloc(size, alignOf[T](), zeroed)
 	if err != nil {
 		return Slice[T]{}, fmt.Errorf("memory: allocate %d×%s: %w", n, reflect.TypeFor[T](), err)
 	}
