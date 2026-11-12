@@ -7,15 +7,20 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
+    devtools = {
+      url = "github:stubbedev/flakes.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
+    };
   };
 
   outputs = inputs @ {
     flake-parts,
-    nixpkgs,
+    devtools,
     ...
   }:
     flake-parts.lib.mkFlake {inherit inputs;} {
-      systems = nixpkgs.lib.systems.flakeExposed;
+      systems = builtins.attrNames devtools.packages;
       imports = [
         ./nix/package.nix
         ./nix/shell.nix

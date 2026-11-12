@@ -1,10 +1,11 @@
 {self, ...}: {
   perSystem = {
+    inputs',
     lib,
     pkgs,
     ...
   }: {
-    packages.default = pkgs.buildGo127Module {
+    packages.default = (pkgs.buildGoModule.override {go = inputs'.devtools.packages.go;}) {
       pname = "memory-go";
       version = "0-unstable-${self.lastModifiedDate or "0"}";
 
