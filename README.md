@@ -9,6 +9,12 @@ large ones. `CGO_ENABLED=0` builds work. The API follows
 [mm-go](https://github.com/joetifa2003/mm-go), which does the same on top of C
 `calloc` through cgo, but misuse panics instead of corrupting memory.
 
+Where off-heap memory cannot reach, the module bridges to the Go heap: funcs,
+interfaces and closures named from off-heap structures by pointer-free handles,
+pinned Go pointers, off-heap memory freed by the GC, and chunked pools for types
+that must stay on the Go heap. Regions can be backed by files and frozen
+read-only, and a guard-page allocator catches every use after free in tests.
+
 ```sh
 go get github.com/stubbedev/memory-go
 ```
@@ -98,6 +104,10 @@ there:
 | `Index[T]` | nothing, in 4 bytes | `Region.Grow`, `Region.IndexAt` | its `Region` |
 | `pool.Item[T]` | one `T` | `Pool.Get` | `Pool.Put` |
 | `Pinned[T]` | a pin of a Go `*T` | `Pin` | `Unpin`, `Pins.UnpinAll` |
+| `heapref.Ref[T]` | a slot holding a Go `T` | `Table.Put` | `Table.Delete` |
+| `heapref.WeakRef[T]` | a slot holding a weak `*T` | `Weak.Put` | `Weak.Delete` |
+| `heapref.FuncID[F]` | nothing, in 4 bytes | `Funcs.Register` | never |
+| `union.Value` | one registered value, inline up to 16 bytes | `union.Store` | `union.Free` |
 
 `Ptr.Value`, `Slice.Elems` and `String.String` hand out ordinary Go pointers,
 slices and strings for access. Those stay valid until the handle is freed or
@@ -149,6 +159,32 @@ good and names each by a 4-byte `FuncID`. It does not deduplicate, since func
 values are not comparable and closures share their code; register each function
 once. With the guards compiled in, using a deleted `Ref` or one from another table
 panics. None of these is safe for concurrent use.
+
+## Interfaces off-heap
+
+An interface holds Go pointers, so it cannot be stored off-heap. `union` stands
+in for one when the concrete types are plain data: a `union.Registry` assigns
+each registered type a 4-byte ID, and a `union.Value` holds the ID and the bytes
+of the value, inline up to 16 bytes and in an allocation beyond that. A `Value`
+holds no Go pointers itself, so vectors, hashmaps and `memory.New` take it.
+
+```go
+var r union.Registry
+if _, err := union.Register[circle](&r); err != nil { // rejects pointer types
+	return err
+}
+v, err := union.Store(a, &r, circle{R: 1}) // or StoreInterface(a, &r, shape)
+if err != nil {
+	return err
+}
+defer union.Free(a, v)
+c, ok := union.Load[circle](&r, v)      // false for any other type
+s := union.Interface(&r, v).(shape)      // rebuilt without reflection
+```
+
+Registered types may hold memory handles such as `memory.String`; the `Value`
+copies the handle, not what it owns. `memory.CheckType` applies the same
+pointer check to any type.
 
 ## Pointer-holding types
 
@@ -365,41 +401,15 @@ parent's add up to the true total, so pass both to `SyncMemoryLimit`.
 | `minheap` | Binary heap ordered by a `less` func, with `DeleteFunc` and `Clip` |
 | `typedarena` | Chunked bump allocator for one type, handing out `Ref`s; `Reset` reuses its warm chunks, `Free` releases them |
 | `pool` | Free-list allocator for one type: `Get` and `Put` individual values without touching the allocator |
-| `heapslab` | `Pool` and `Arena` for one type that holds Go pointers, carved from Go-heap chunks; `Put` and `Reset` zero what they take back |
 | `heapref` | Go-heap values such as funcs, interfaces and maps named from off-heap memory by pointer-free handles: `Table`, `Weak` and `Funcs` |
 | `union` | Tagged union: a `Value` holds one value of any registered pointer-free type, so interface-typed data can live off-heap |
+| `heapslab` | `Pool` and `Arena` for one type that holds Go pointers, carved from Go-heap chunks; `Put` and `Reset` zero what they take back |
 | `memtest` | `Local`, `Shared` and `Guarded` allocators that fail a test on a leak |
 
 Containers are not safe for concurrent use, even on a `Shared` allocator.
 `memory.String` is not comparable, because `==` could only compare addresses; use
 `hashmap.Strings` to key by text. Adding or removing entries of a `hashmap`, `btree`
 or `linkedlist` while ranging over `All`, `From`, `Range`, `Backward`, `Keys` or `Values` panics instead of reading freed or reused slots.
-
-## Interfaces off-heap
-
-An interface holds Go pointers, so it cannot be stored off-heap. `union` stands
-in for one when the concrete types are plain data: a `union.Registry` assigns
-each registered type a 4-byte ID, and a `union.Value` holds the ID and the bytes
-of the value, inline up to 16 bytes and in an allocation beyond that. A `Value`
-holds no Go pointers itself, so vectors, hashmaps and `memory.New` take it.
-
-```go
-var r union.Registry
-if _, err := union.Register[circle](&r); err != nil { // rejects pointer types
-	return err
-}
-v, err := union.Store(a, &r, circle{R: 1}) // or StoreInterface(a, &r, shape)
-if err != nil {
-	return err
-}
-defer union.Free(a, v)
-c, ok := union.Load[circle](&r, v)      // false for any other type
-s := union.Interface(&r, v).(shape)      // rebuilt without reflection
-```
-
-Registered types may hold memory handles such as `memory.String`; the `Value`
-copies the handle, not what it owns. `memory.CheckType` applies the same
-pointer check to any type.
 
 ## Testing failure paths
 
