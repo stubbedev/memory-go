@@ -9,8 +9,12 @@ import (
 	memory "github.com/stubbedev/memory-go"
 )
 
-// ErrSize reports a chunk size that is not positive.
-var ErrSize = errors.New("chunk size must be positive")
+var (
+	// ErrSize reports a chunk size that is not positive.
+	ErrSize = errors.New("chunk size must be positive")
+	// ErrZeroSize reports a type with no bytes to pool.
+	ErrZeroSize = errors.New("pool of a zero-size type")
+)
 
 // Chunks hands out zeroed Ts from chunks of a fixed size. Runs longer than a
 // chunk get a chunk of their own.

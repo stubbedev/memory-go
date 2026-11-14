@@ -11,52 +11,45 @@
 package pool
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
-	"sync/atomic"
 	"unsafe"
 
 	memory "github.com/stubbedev/memory-go"
 	"github.com/stubbedev/memory-go/internal/chunks"
+	"github.com/stubbedev/memory-go/internal/slot"
 )
 
 var (
 	// ErrChunkSize reports a chunk size that is not positive.
 	ErrChunkSize = chunks.ErrSize
 	// ErrZeroSize reports a type with no bytes to pool.
-	ErrZeroSize = errors.New("pool of a zero-size type")
+	ErrZeroSize = chunks.ErrZeroSize
 )
-
-type slot[T any] struct {
-	_     [0]uint64
-	tag   tag
-	value T
-}
 
 // Item is a T owned by a Pool. It may be stored off-heap. The zero Item is
 // nil.
 type Item[T any] struct {
-	r memory.Ref[slot[T]]
+	r memory.Ref[slot.Slot[T]]
 }
 
 // Value returns a Go pointer to the T, valid until the Item is put back.
 func (it Item[T]) Value() *T {
 	s := it.r.Value()
-	s.tag.checkLive(unsafe.Pointer(s))
-	return &s.value
+	if !s.Live() {
+		slot.UseAfterPut("pool", s)
+	}
+	return &s.Value
 }
 
 // IsNil reports whether it refers to nothing.
 func (it Item[T]) IsNil() bool { return it.r.IsNil() }
 
-var ids atomic.Uint64
-
 // Pool hands out zeroed Ts and takes them back for reuse. It is not safe for
 // concurrent use.
 type Pool[T any] struct {
-	c    *chunks.Chunks[slot[T]]
-	free memory.Ref[slot[T]]
+	c    *chunks.Chunks[slot.Slot[T]]
+	free memory.Ref[slot.Slot[T]]
 	id   uint64
 	n    int
 }
@@ -68,18 +61,18 @@ func New[T any](a memory.Allocator, chunkSize int) (*Pool[T], error) {
 	if unsafe.Sizeof(zero) == 0 {
 		return nil, fmt.Errorf("pool: %s: %w", reflect.TypeFor[T](), ErrZeroSize)
 	}
-	c, err := chunks.New[slot[T]](a, chunkSize)
+	c, err := chunks.New[slot.Slot[T]](a, chunkSize)
 	if err != nil {
 		return nil, err
 	}
-	return &Pool[T]{c: c, id: ids.Add(1) << 1}, nil
+	return &Pool[T]{c: c, id: slot.NewID()}, nil
 }
 
 // Len returns the number of Items handed out and not yet put back.
 func (p *Pool[T]) Len() int { return p.n }
 
-func nextOf[T any](s *slot[T]) *memory.Ref[slot[T]] {
-	return (*memory.Ref[slot[T]])(unsafe.Pointer(&s.value))
+func nextOf[T any](s *slot.Slot[T]) *memory.Ref[slot.Slot[T]] {
+	return (*memory.Ref[slot.Slot[T]])(unsafe.Pointer(&s.Value))
 }
 
 // Get returns a zeroed T.
@@ -89,9 +82,9 @@ func (p *Pool[T]) Get() (Item[T], error) {
 		return Item[T]{}, err
 	}
 	if recycled {
-		*r.Value() = slot[T]{}
+		*r.Value() = slot.Slot[T]{}
 	}
-	r.Value().tag.mark(p.id)
+	r.Value().Mark(p.id)
 	p.n++
 	return Item[T]{r: r}, nil
 }
@@ -104,12 +97,12 @@ func (p *Pool[T]) GetUninit() (Item[T], error) {
 	if err != nil {
 		return Item[T]{}, err
 	}
-	r.Value().tag.mark(p.id)
+	r.Value().Mark(p.id)
 	p.n++
 	return Item[T]{r: r}, nil
 }
 
-func (p *Pool[T]) take() (memory.Ref[slot[T]], bool, error) {
+func (p *Pool[T]) take() (memory.Ref[slot.Slot[T]], bool, error) {
 	r := p.free
 	if r.IsNil() {
 		fresh, err := p.c.Take()
@@ -125,7 +118,9 @@ func (p *Pool[T]) Put(it Item[T]) {
 		panic("pool: Put of the zero Item")
 	}
 	s := it.r.Value()
-	s.tag.unmark(unsafe.Pointer(s), p.id)
+	if !s.Unmark(p.id) {
+		slot.NotLive("pool", s)
+	}
 	*(*uintptr)(unsafe.Pointer(nextOf(s))) = uintptr(unsafe.Pointer(p.free.Value()))
 	p.free = it.r
 	p.n--
@@ -134,6 +129,6 @@ func (p *Pool[T]) Put(it Item[T]) {
 // Free releases every chunk, invalidating all Items. p must not be used
 // afterwards.
 func (p *Pool[T]) Free() error {
-	p.free, p.n = memory.Ref[slot[T]]{}, 0
+	p.free, p.n = memory.Ref[slot.Slot[T]]{}, 0
 	return p.c.Free()
 }

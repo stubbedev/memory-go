@@ -50,6 +50,8 @@ fuzz time="30s":
     go test ./linkedlist -run='^$' -fuzz='^FuzzMatchesSlice$' -fuzztime={{time}}
     go test ./minheap -run='^$' -fuzz='^FuzzMatchesSortedSlice$' -fuzztime={{time}}
     go test ./pool -run='^$' -fuzz='^FuzzMatchesModel$' -fuzztime={{time}}
+    go test ./heapslab -run='^$' -fuzz='^FuzzPoolMatchesModel$' -fuzztime={{time}}
+    go test ./heapslab -run='^$' -fuzz='^FuzzArenaMatchesModel$' -fuzztime={{time}}
 
 # Run every benchmark, including the GC comparison.
 bench:

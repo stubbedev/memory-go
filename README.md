@@ -102,6 +102,39 @@ there:
 slices and strings for access. Those stay valid until the handle is freed or
 resized and must not outlive it.
 
+## Pointer-holding types
+
+Types with strings, slices, maps, funcs or interfaces cannot live off-heap.
+`heapslab` gives them the same chunked `Pool` (`Get`, `Put`, `Len`, `Reset`,
+`Free`) and `Arena` (`Alloc`, `AllocSlice`, `Reset`, `Free`), but over ordinary
+`[]T` chunks on the Go heap. The GC still scans every pointer, so this does not
+remove its work the way off-heap memory does. What it buys: one GC object per
+chunk instead of one per value, neighbours in the same cache lines, allocation
+that is a pop or a bump, and bulk reuse. `Put` and `Reset` zero what they take
+back, so whatever those values referenced is collectable at once. Use it for
+many short-lived or batch-scoped values of one pointer-holding type: parse trees,
+per-request graphs, connection state. For a few long-lived values, plain `new`
+is simpler.
+
+A pointer into a chunk keeps the whole chunk alive, so nothing dangles: the one
+hazard is using a value after `Put` or `Reset`, which then aliases whatever the
+slot holds next. Checked builds catch that for `Pool` items, like `pool` does, at
+8 bytes per value; an `Arena` checks nothing. A pool keeps its free list in a slice
+of pointers to the values put back.
+
+A 40-byte node holding a string and two pointers (`go test -bench . ./heapslab`,
+linux/amd64, 12 threads on a loaded machine, so read these as ratios):
+
+| Operation | Checked | `memory_unchecked` | Go `new` |
+| --- | --- | --- | --- |
+| `Pool` `Get` + `Put` | 8–15 ns | 7 ns | 31–50 ns |
+| `Arena` `Alloc`, `Reset` every 1024 | 3–5 ns | 3 ns | 31–50 ns |
+| Build a 2²⁰ − 1 node tree, per node, GC included | 11 ns (`Arena`) | | 39 ns |
+| Full `runtime.GC()` with that tree alive | 2.8 ms (`Arena`), 3.4 ms (`Pool`) | | 7.3 ms |
+
+The same tree off-heap costs the GC 0.13 ms (see [Why](#why)), so prefer
+`memory.Ptr` handles where the type allows it.
+
 ## Reservation
 
 An allocation of up to 8 KiB takes a slot from a size class, four to a doubling,
@@ -172,7 +205,8 @@ use the same slots as unchecked ones. These panic at the point of the mistake:
   resized, even when the resize kept the same address
 - freeing or resizing through a different allocator than the one that allocated
 - reading a freed `Ptr`, `Slice` or `String` through the handle
-- putting a `pool.Item` back twice or into another pool, or reading it after `Put`
+- putting a `pool.Item` or `heapslab.Item` back twice or into another pool, or
+  reading it after `Put`
 - using one `Local` from several goroutines at once
 - out-of-range indices in every container
 
@@ -235,6 +269,7 @@ parent's add up to the true total, so pass both to `SyncMemoryLimit`.
 | `minheap` | Binary heap ordered by a `less` func, with `DeleteFunc` and `Clip` |
 | `typedarena` | Chunked bump allocator for one type, handing out `Ref`s; `Reset` reuses its warm chunks, `Free` releases them |
 | `pool` | Free-list allocator for one type: `Get` and `Put` individual values without touching the allocator |
+| `heapslab` | `Pool` and `Arena` for one type that holds Go pointers, carved from Go-heap chunks; `Put` and `Reset` zero what they take back |
 | `memtest` | `Local` and `Shared` allocators that fail a test on a leak |
 
 Containers are not safe for concurrent use, even on a `Shared` allocator.
