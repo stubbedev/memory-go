@@ -252,20 +252,23 @@ func TestGuardedQuarantineUnmapsOldest(t *testing.T) {
 func TestGuardedStatsAndFootprint(t *testing.T) {
 	t.Parallel()
 
+	const largestSmallAllocation = 8 << 10
 	page := os.Getpagesize()
+	sliceLen := min(page+1, largestSmallAllocation)
+	slicePages := (sliceLen + page - 1) / page
 	var a memory.Guarded
 	p, err := memory.New[uint64](&a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := memory.MakeSlice[byte](&a, page+1)
+	s, err := memory.MakeSlice[byte](&a, sliceLen)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := a.Stats(), (memory.Stats{Live: 2, Bytes: 8 + page + 1}); got != want {
+	if got, want := a.Stats(), (memory.Stats{Live: 2, Bytes: 8 + sliceLen}); got != want {
 		t.Fatalf("Stats = %+v, want %+v", got, want)
 	}
-	if got, want := a.Footprint(), (memory.Footprint{Mapped: 256 << 10, Committed: 4 * page}); got != want {
+	if got, want := a.Footprint(), (memory.Footprint{Mapped: 256 << 10, Committed: (2 + slicePages) * page}); got != want {
 		t.Fatalf("Footprint = %+v, want %+v", got, want)
 	}
 	if err := memory.Free(&a, p); err != nil {
@@ -277,7 +280,7 @@ func TestGuardedStatsAndFootprint(t *testing.T) {
 	if got := a.Stats(); got != (memory.Stats{}) {
 		t.Fatalf("Stats = %+v after freeing everything", got)
 	}
-	if got, want := a.Footprint(), (memory.Footprint{Mapped: 256 << 10, Committed: page, Retained: 5 * page}); got != want {
+	if got, want := a.Footprint(), (memory.Footprint{Mapped: 256 << 10, Committed: page, Retained: (3 + slicePages) * page}); got != want {
 		t.Fatalf("Footprint = %+v, want %+v", got, want)
 	}
 	if err := a.Close(); err != nil {
