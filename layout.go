@@ -41,6 +41,12 @@ func typeKey[T any]() uintptr {
 	return (*[2]uintptr)(unsafe.Pointer(&probe))[0]
 }
 
+// CheckType returns an error wrapping ErrHoldsPointers if T holds Go pointers
+// and so cannot live off-heap, naming the offending field, and nil otherwise.
+// Every allocation runs this check; packages that copy a T into off-heap
+// memory by other means use it to apply the same rule.
+func CheckType[T any]() error { return checkType[T]() }
+
 func checkType[T any]() error {
 	key := typeKey[T]()
 	entry := &cleanTypes[(key>>typeKeyShift)%uintptr(len(cleanTypes))]

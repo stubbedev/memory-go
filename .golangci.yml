@@ -54,7 +54,7 @@ linters:
         linters:
           - gosec
         text: G115
-      - path: ^(hashmap/strings|intern/intern|pool/pool)\.go$
+      - path: ^(hashmap/strings|intern/intern|pool/pool|union/union)\.go$
         linters:
           - gosec
         text: G103

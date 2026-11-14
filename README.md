@@ -296,12 +296,39 @@ parent's add up to the true total, so pass both to `SyncMemoryLimit`.
 | `pool` | Free-list allocator for one type: `Get` and `Put` individual values without touching the allocator |
 | `heapslab` | `Pool` and `Arena` for one type that holds Go pointers, carved from Go-heap chunks; `Put` and `Reset` zero what they take back |
 | `heapref` | Go-heap values such as funcs, interfaces and maps named from off-heap memory by pointer-free handles: `Table`, `Weak` and `Funcs` |
+| `union` | Tagged union: a `Value` holds one value of any registered pointer-free type, so interface-typed data can live off-heap |
 | `memtest` | `Local` and `Shared` allocators that fail a test on a leak |
 
 Containers are not safe for concurrent use, even on a `Shared` allocator.
 `memory.String` is not comparable, because `==` could only compare addresses; use
 `hashmap.Strings` to key by text. Adding or removing entries of a `hashmap`, `btree`
 or `linkedlist` while ranging over `All`, `From`, `Range`, `Backward`, `Keys` or `Values` panics instead of reading freed or reused slots.
+
+## Interfaces off-heap
+
+An interface holds Go pointers, so it cannot be stored off-heap. `union` stands
+in for one when the concrete types are plain data: a `union.Registry` assigns
+each registered type a 4-byte ID, and a `union.Value` holds the ID and the bytes
+of the value, inline up to 16 bytes and in an allocation beyond that. A `Value`
+holds no Go pointers itself, so vectors, hashmaps and `memory.New` take it.
+
+```go
+var r union.Registry
+if _, err := union.Register[circle](&r); err != nil { // rejects pointer types
+	return err
+}
+v, err := union.Store(a, &r, circle{R: 1}) // or StoreInterface(a, &r, shape)
+if err != nil {
+	return err
+}
+defer union.Free(a, v)
+c, ok := union.Load[circle](&r, v)      // false for any other type
+s := union.Interface(&r, v).(shape)      // rebuilt without reflection
+```
+
+Registered types may hold memory handles such as `memory.String`; the `Value`
+copies the handle, not what it owns. `memory.CheckType` applies the same
+pointer check to any type.
 
 ## Testing failure paths
 
