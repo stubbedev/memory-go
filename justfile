@@ -52,6 +52,7 @@ fuzz time="30s":
     go test ./pool -run='^$' -fuzz='^FuzzMatchesModel$' -fuzztime={{time}}
     go test ./heapslab -run='^$' -fuzz='^FuzzPoolMatchesModel$' -fuzztime={{time}}
     go test ./heapslab -run='^$' -fuzz='^FuzzArenaMatchesModel$' -fuzztime={{time}}
+    go test ./heapref -run='^$' -fuzz='^FuzzMatchesModel$' -fuzztime={{time}}
 
 # Run every benchmark, including the GC comparison.
 bench:

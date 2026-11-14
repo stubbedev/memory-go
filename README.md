@@ -102,6 +102,31 @@ there:
 slices and strings for access. Those stay valid until the handle is freed or
 resized and must not outlive it.
 
+## Go values
+
+Off-heap memory cannot hold a func, interface, map or closure, but it can name
+one. `heapref.Table[T]` keeps values of any type in a Go slice the collector
+scans and hands out a `Ref[T]` of two 4-byte words, slot and generation, which
+passes the pointer check and may sit in a `Ptr`, `vector` or `hashmap`. A value
+stays alive while its slot does; `Delete` clears the slot so the collector can
+reclaim the value, and the slot is reused under a new generation.
+
+```go
+var handlers heapref.Table[func(int)]
+r, err := handlers.Put(func(n int) { fmt.Println(n) })
+t, err := memory.New[timer](&a) // timer has a field OnFire heapref.Ref[func(int)]
+t.Value().OnFire = r
+handlers.Get(t.Value().OnFire)(42)
+```
+
+`heapref.Weak[T]` holds `weak.Pointer`s instead, so an off-heap cache can name Go
+objects without keeping them alive: `Get` returns nil once the target is gone, and
+the slot stays in use until `Delete`. `heapref.Funcs[F]` registers functions for
+good and names each by a 4-byte `FuncID`. It does not deduplicate, since func
+values are not comparable and closures share their code; register each function
+once. With the guards compiled in, using a deleted `Ref` or one from another table
+panics. None of these is safe for concurrent use.
+
 ## Pointer-holding types
 
 Types with strings, slices, maps, funcs or interfaces cannot live off-heap.
@@ -270,6 +295,7 @@ parent's add up to the true total, so pass both to `SyncMemoryLimit`.
 | `typedarena` | Chunked bump allocator for one type, handing out `Ref`s; `Reset` reuses its warm chunks, `Free` releases them |
 | `pool` | Free-list allocator for one type: `Get` and `Put` individual values without touching the allocator |
 | `heapslab` | `Pool` and `Arena` for one type that holds Go pointers, carved from Go-heap chunks; `Put` and `Reset` zero what they take back |
+| `heapref` | Go-heap values such as funcs, interfaces and maps named from off-heap memory by pointer-free handles: `Table`, `Weak` and `Funcs` |
 | `memtest` | `Local` and `Shared` allocators that fail a test on a leak |
 
 Containers are not safe for concurrent use, even on a `Shared` allocator.
