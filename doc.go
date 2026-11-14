@@ -16,6 +16,9 @@
 // and OpenRegion backs one with a file so that it persists and can be shared
 // between processes. Region.Freeze and FreezeSlice make memory read-only, so that
 // a stray write faults.
+// Guarded is for tests: it gives every allocation pages of its own followed by a
+// guard page and never reuses freed addresses, so use after free and overruns
+// fault where they happen.
 //
 // Misuse panics instead of corrupting memory. Every allocation is tracked in a
 // side table or trailer recording its allocator, its size and whether it is live, so a
@@ -24,7 +27,7 @@
 // handle all panic, as does using a Local from
 // several goroutines at once. A handle to memory that has since been freed
 // and handed out again cannot be told apart from its new owner, and Refs and
-// Go pointers obtained from handles are not checked.
+// Go pointers obtained from handles are not checked, except on Guarded.
 //
 // Building with the memory_unchecked tag compiles these checks out: no
 // side table, no liveness or owner checks and no concurrency guard, roughly

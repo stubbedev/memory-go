@@ -39,6 +39,12 @@ func TestReportsLeaks(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("guarded", func(t *testing.T) {
+		t.Parallel()
+		if _, err := memory.New[int](memtest.Guarded(&recorder{TB: t})); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestQuietWithoutLeaks(t *testing.T) {

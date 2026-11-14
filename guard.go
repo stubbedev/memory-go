@@ -53,6 +53,10 @@ func checkLive(p unsafe.Pointer, size int) {
 }
 
 func checkDeadSlot(s *span, p unsafe.Pointer, size int) {
+	if s.class == guardedClass {
+		checkGuarded(s, p, size)
+		return
+	}
 	if s.isBump() && s.holds(p, size) {
 		return
 	}
@@ -63,11 +67,37 @@ func checkDeadSlot(s *span, p unsafe.Pointer, size int) {
 }
 
 func checkTrailer(p unsafe.Pointer, size int) {
+	if guardedLarge.n.Load() != 0 && checkGuardedLarge(p, size) {
+		return
+	}
 	switch t := trailerOf(p, size); {
 	case t.magic == movedMagic, t.magic == liveMagic && t.size != int64(size):
 		panic(fmt.Sprintf("memory: use of %#x after it was resized", uintptr(p)))
 	case t.magic != liveMagic:
 		panic(fmt.Sprintf("memory: use of %#x after it was freed", uintptr(p)))
+	}
+}
+
+func checkGuardedLarge(p unsafe.Pointer, size int) bool {
+	s := spanOf(p)
+	v, ok := guardedLarge.chunks.Load(unsafe.Pointer(s))
+	reserved, _ := v.(int)
+	if !ok || uintptr(p)-uintptr(unsafe.Pointer(s)) >= uintptr(reserved) {
+		return false
+	}
+	checkGuarded(s, p, size)
+	return true
+}
+
+func checkGuarded(s *span, p unsafe.Pointer, size int) {
+	switch e := guardedEntry(unsafe.Pointer(s), p).Load(); e {
+	case int64(size):
+	case guardedMoved:
+		panic(fmt.Sprintf("memory: use of %#x after it was resized", uintptr(p)))
+	case guardedFreed:
+		panic(fmt.Sprintf("memory: use of %#x after it was freed", uintptr(p)))
+	default:
+		panic(fmt.Sprintf("memory: %#x is not a live allocation of %d bytes", uintptr(p), size))
 	}
 }
 

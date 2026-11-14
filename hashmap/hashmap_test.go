@@ -64,57 +64,73 @@ func FuzzMatchesMap(f *testing.F) {
 			t.Fatal(err)
 		}
 		defer m.Free()
-		ops := testkit.NewOps(data)
-		randomKey := func() key { return key{A: uint16(ops.Int(600)), B: [2]int8{int8(ops.Int(3))}} }
-		model := map[key]uint64{}
-		for step := 0; ops.More(); step++ {
-			k := randomKey()
-			switch ops.Int(20) {
-			case 0:
-				if err := m.Clip(); err != nil {
-					t.Fatal(err)
-				}
-			case 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11:
-				v := ops.Uint64()
-				if err := m.Set(k, v); err != nil {
-					t.Fatal(err)
-				}
-				model[k] = v
-			default:
-				_, want := model[k]
-				if got := m.Delete(k); got != want {
-					t.Fatalf("step %d: Delete(%v) = %v, want %v", step, k, got, want)
-				}
-				delete(model, k)
-			}
-			if m.Len() != len(model) {
-				t.Fatalf("step %d: Len = %d, want %d", step, m.Len(), len(model))
-			}
-			probe := randomKey()
-			got, ok := m.Get(probe)
-			want, wantOK := model[probe]
-			if ok != wantOK || got != want {
-				t.Fatalf("step %d: Get(%v) = %d, %v; want %d, %v", step, probe, got, ok, want, wantOK)
-			}
-		}
-		if got := maps.Collect(m.All()); !maps.Equal(got, model) {
-			t.Fatal("All differs from model")
-		}
-		keys := 0
-		for k := range m.Keys() {
-			if _, ok := model[k]; !ok {
-				t.Fatalf("Keys yielded %v, absent from model", k)
-			}
-			keys++
-		}
-		values := 0
-		for range m.Values() {
-			values++
-		}
-		if keys != len(model) || values != len(model) {
-			t.Fatalf("Keys, Values yielded %d, %d; want %d", keys, values, len(model))
-		}
+		matchesMap(t, m, data)
 	})
+}
+
+func TestMatchesMapOnGuarded(t *testing.T) {
+	t.Parallel()
+
+	m, err := hashmap.New[key, uint64](memtest.Guarded(t), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Free()
+	matchesMap(t, m, testkit.Seed(3, 1<<16))
+}
+
+func matchesMap(t *testing.T, m *hashmap.Map[key, uint64], data []byte) {
+	t.Helper()
+	ops := testkit.NewOps(data)
+	randomKey := func() key { return key{A: uint16(ops.Int(600)), B: [2]int8{int8(ops.Int(3))}} }
+	model := map[key]uint64{}
+	for step := 0; ops.More(); step++ {
+		k := randomKey()
+		switch ops.Int(20) {
+		case 0:
+			if err := m.Clip(); err != nil {
+				t.Fatal(err)
+			}
+		case 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11:
+			v := ops.Uint64()
+			if err := m.Set(k, v); err != nil {
+				t.Fatal(err)
+			}
+			model[k] = v
+		default:
+			_, want := model[k]
+			if got := m.Delete(k); got != want {
+				t.Fatalf("step %d: Delete(%v) = %v, want %v", step, k, got, want)
+			}
+			delete(model, k)
+		}
+		if m.Len() != len(model) {
+			t.Fatalf("step %d: Len = %d, want %d", step, m.Len(), len(model))
+		}
+		probe := randomKey()
+		got, ok := m.Get(probe)
+		want, wantOK := model[probe]
+		if ok != wantOK || got != want {
+			t.Fatalf("step %d: Get(%v) = %d, %v; want %d, %v", step, probe, got, ok, want, wantOK)
+		}
+	}
+	if got := maps.Collect(m.All()); !maps.Equal(got, model) {
+		t.Fatal("All differs from model")
+	}
+	keys := 0
+	for k := range m.Keys() {
+		if _, ok := model[k]; !ok {
+			t.Fatalf("Keys yielded %v, absent from model", k)
+		}
+		keys++
+	}
+	values := 0
+	for range m.Values() {
+		values++
+	}
+	if keys != len(model) || values != len(model) {
+		t.Fatalf("Keys, Values yielded %d, %d; want %d", keys, values, len(model))
+	}
 }
 
 func TestPtrUpdatesInPlace(t *testing.T) {

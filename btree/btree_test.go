@@ -141,58 +141,69 @@ func FuzzMatchesModel(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		model := map[uint64]uint64{}
-		ops := testkit.NewOps(data)
-		for ops.More() {
-			key := ops.Uint64() % 2048
-			switch ops.Int(5) {
-			case 0, 1:
-				v := ops.Uint64()
-				if err := tr.Set(key, v); err != nil {
-					t.Fatal(err)
-				}
-				model[key] = v
-			case 2, 3:
-				_, want := model[key]
-				if got := tr.Delete(key); got != want {
-					t.Fatalf("Delete(%d) = %v, want %v", key, got, want)
-				}
-				delete(model, key)
-			default:
-				got, ok := tr.Get(key)
-				want, wantOK := model[key]
-				if ok != wantOK || got != want {
-					t.Fatalf("Get(%d) = %d, %v; want %d, %v", key, got, ok, want, wantOK)
-				}
-			}
-		}
-		keys := make([]uint64, 0, len(model))
-		for k := range model {
-			keys = append(keys, k)
-		}
-		slices.Sort(keys)
-		i := 0
-		for k, v := range tr.All() {
-			if k != keys[i] || v != model[k] {
-				t.Fatalf("All[%d] = %d -> %d, want %d -> %d", i, k, v, keys[i], model[keys[i]])
-			}
-			i++
-		}
-		if i != len(keys) || tr.Len() != len(keys) {
-			t.Fatalf("All yielded %d, Len = %d, want %d", i, tr.Len(), len(keys))
-		}
-		from := ops.Uint64()%2048 + 3
-		at, _ := slices.BinarySearch(keys, from)
-		for k := range tr.From(from) {
-			if at >= len(keys) || k != keys[at] {
-				t.Fatalf("From(%d) yielded %d at position %d of %v", from, k, at, keys)
-			}
-			at++
-		}
-		if at != len(keys) {
-			t.Fatalf("From(%d) stopped at %d of %d", from, at, len(keys))
-		}
+		matchesModel(t, tr, data)
 	})
+}
+
+func TestMatchesModelOnGuarded(t *testing.T) {
+	t.Parallel()
+
+	matchesModel(t, newTree(t, memtest.Guarded(t)), testkit.Seed(11, 1<<16))
+}
+
+func matchesModel(t *testing.T, tr *btree.Tree[uint64, uint64], data []byte) {
+	t.Helper()
+	model := map[uint64]uint64{}
+	ops := testkit.NewOps(data)
+	for ops.More() {
+		key := ops.Uint64() % 2048
+		switch ops.Int(5) {
+		case 0, 1:
+			v := ops.Uint64()
+			if err := tr.Set(key, v); err != nil {
+				t.Fatal(err)
+			}
+			model[key] = v
+		case 2, 3:
+			_, want := model[key]
+			if got := tr.Delete(key); got != want {
+				t.Fatalf("Delete(%d) = %v, want %v", key, got, want)
+			}
+			delete(model, key)
+		default:
+			got, ok := tr.Get(key)
+			want, wantOK := model[key]
+			if ok != wantOK || got != want {
+				t.Fatalf("Get(%d) = %d, %v; want %d, %v", key, got, ok, want, wantOK)
+			}
+		}
+	}
+	keys := make([]uint64, 0, len(model))
+	for k := range model {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	i := 0
+	for k, v := range tr.All() {
+		if k != keys[i] || v != model[k] {
+			t.Fatalf("All[%d] = %d -> %d, want %d -> %d", i, k, v, keys[i], model[keys[i]])
+		}
+		i++
+	}
+	if i != len(keys) || tr.Len() != len(keys) {
+		t.Fatalf("All yielded %d, Len = %d, want %d", i, tr.Len(), len(keys))
+	}
+	from := ops.Uint64()%2048 + 3
+	at, _ := slices.BinarySearch(keys, from)
+	for k := range tr.From(from) {
+		if at >= len(keys) || k != keys[at] {
+			t.Fatalf("From(%d) yielded %d at position %d of %v", from, k, at, keys)
+		}
+		at++
+	}
+	if at != len(keys) {
+		t.Fatalf("From(%d) stopped at %d of %d", from, at, len(keys))
+	}
 }
 
 func BenchmarkSetGetDelete(b *testing.B) {

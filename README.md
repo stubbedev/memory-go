@@ -305,10 +305,13 @@ use the same slots as unchecked ones. These panic at the point of the mistake:
 Handing a `Mark` to `Release` after a `Reset` or `Free`, or from another arena,
 panics too.
 
-Not caught: a stale handle whose memory was freed and has since been handed out
-again, `Ref`s, `View`s and `Index`es, and Go pointers or slices obtained from a
-handle and kept after it was freed. An `Arena` panics on a handle past its mark but
-not on one whose space was handed out again, and does not detect a double free.
+Not caught by `Local`, `Shared` and `Arena`: a stale handle whose memory was freed
+and has since been handed out again, `Ref`s, `View`s and `Index`es, and Go pointers
+or slices obtained from a handle and kept after it was freed. Run the tests on
+`memory.Guarded` (see [Finding use after free](#finding-use-after-free)) to catch
+all of these except `Index`es, which belong to a `Region`. An `Arena` panics on a
+handle past its mark but not on one whose space was handed out again, and does not
+detect a double free.
 `Release` frees everything allocated or resized since the `Mark`, so a container
 from before the `Mark` that grew after it is gone too, and a `Vector` caches its
 elements without rechecking them, so using one after that goes uncaught.
@@ -339,6 +342,7 @@ saves.
 | `memory.Local` | One goroutine. Zero value is ready; must not be copied after use. |
 | `memory.Shared` | Several goroutines. Each call works in a shard of its own, and memory freed on another shard returns to its owner without a lock. |
 | `memory.Arena` | One goroutine. Mixed types bump-allocated from a parent's spans; `Mark`, `Release` and `Reset` free in bulk, and `WithArena` scopes one to a function. |
+| `memory.Guarded` | Debugging, from several goroutines. Pages of its own and a guard page per allocation, freed addresses never reused; slow and wasteful, for tests. |
 
 All satisfy `memory.Allocator`, which every function and container takes, so a
 hashmap can live in an arena and vanish with it. `Stats` reports live allocations
@@ -364,7 +368,7 @@ parent's add up to the true total, so pass both to `SyncMemoryLimit`.
 | `heapslab` | `Pool` and `Arena` for one type that holds Go pointers, carved from Go-heap chunks; `Put` and `Reset` zero what they take back |
 | `heapref` | Go-heap values such as funcs, interfaces and maps named from off-heap memory by pointer-free handles: `Table`, `Weak` and `Funcs` |
 | `union` | Tagged union: a `Value` holds one value of any registered pointer-free type, so interface-typed data can live off-heap |
-| `memtest` | `Local` and `Shared` allocators that fail a test on a leak |
+| `memtest` | `Local`, `Shared` and `Guarded` allocators that fail a test on a leak |
 
 Containers are not safe for concurrent use, even on a `Shared` allocator.
 `memory.String` is not comparable, because `==` could only compare addresses; use
@@ -403,6 +407,29 @@ Allocation failures are hard to provoke, so `memory.NewFaulty` wraps an allocato
 fails it on demand: `FailAllocsAfter(n)` for out-of-memory, `FailFreesAfter(n)` for
 the operating system refusing memory back. This module's own containers are swept
 this way, failing each allocation and free in turn.
+
+## Finding use after free
+
+`memory.Guarded` gives every allocation pages of its own, ending the value exactly
+at an inaccessible guard page, and on free makes the pages inaccessible and never
+hands their addresses out again. Any later use of freed memory faults at the point
+of the mistake, whether through the handle, a `Ref`, a `View` or a Go pointer kept
+from `Value` or `Elems`, and so does writing past the end. Reading a freed `Ptr`,
+`Slice` or `String` through its handle panics with a message instead, resizing
+always moves, and freeing twice, through the wrong allocator or with a stale handle
+panics. Not guarded: the rest of the value's first page before it, and the padding
+after it that a larger requested alignment needs.
+
+`memtest.Guarded(t)` returns one that fails the test on a leak, so a suite written
+against `memtest.Local` runs on it by swapping the constructor. Turn faults into
+recoverable panics with `debug.SetPanicOnFault(true)` to assert on them.
+
+Each allocation costs at least a page of memory, two of address space and, on
+Linux, a mapping of the `vm.max_map_count` limit (65530 by default), so keep it
+out of production. Freed address space stays reserved until `Close`;
+`NewGuarded(quarantine)` caps it, returning the oldest fully freed blocks to the
+operating system beyond that. Those still fault until the operating system maps
+something else at their addresses, which can then hide a use after free.
 
 ## Recipes
 

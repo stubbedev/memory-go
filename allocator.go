@@ -8,7 +8,7 @@ import (
 )
 
 // Allocator is the memory source every function and container in this module
-// takes. It is implemented by *Local, *Shared and *Arena only.
+// takes. It is implemented by *Local, *Shared, *Arena, *Guarded and *Faulty only.
 type Allocator interface {
 	alloc(size, align int, f fill) (unsafe.Pointer, error)
 	realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error)
