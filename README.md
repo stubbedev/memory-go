@@ -97,10 +97,33 @@ there:
 | `View[T]` | nothing | `Slice.View` | its owner |
 | `Index[T]` | nothing, in 4 bytes | `Region.Grow`, `Region.IndexAt` | its `Region` |
 | `pool.Item[T]` | one `T` | `Pool.Get` | `Pool.Put` |
+| `Pinned[T]` | a pin of a Go `*T` | `Pin` | `Unpin`, `Pins.UnpinAll` |
 
 `Ptr.Value`, `Slice.Elems` and `String.String` hand out ordinary Go pointers,
 slices and strings for access. Those stay valid until the handle is freed or
 resized and must not outlive it.
+
+### Pinned Go objects
+
+A `Pinned[T]` is the exception: a real Go pointer, allowed off-heap the way cgo
+allows C memory to hold pointers to pinned Go objects. `Pin(&pins, p)` pins `*p`
+in a `memory.Pins`, which keeps it alive and unmoved from the Go heap, so `Pins`
+must itself stay reachable until everything in it is unpinned; dropping it with
+live pins makes the runtime panic about a leaking pinned pointer. `Unpin(&pins,
+&h)` clears the handle before releasing the pin, because the collector inspects
+the old value of a handle as it is overwritten and the object may be gone once
+unpinned; clear any other copies first. Only pointers can be pinned, so keep a
+func off-heap as a pinned `*func()`.
+
+### Owned handles
+
+`Own(a, h)` hands a `Ptr`, `Slice` or `String` from a `Shared` to a small owner
+on the Go heap that frees it once the owner is unreachable, or right away on
+`Close`, which also cancels the collection-time free. That free runs on a
+goroutine of the runtime's, so only a `Shared` can own handles; the type of
+`Own` enforces it. Keep the owner alive while using its `Handle`. An owner
+collected after its `Shared` was closed leaves the memory alone, since `Close`
+already released it.
 
 ## Go values
 
@@ -283,7 +306,7 @@ parent's add up to the true total, so pass both to `SyncMemoryLimit`.
 
 | Package | What it is |
 | --- | --- |
-| `memory` | Allocators, `Region`, and the `Ptr`, `Ref`, `Slice`, `View`, `Index` and `String` handles |
+| `memory` | Allocators, `Region`, the `Ptr`, `Ref`, `Slice`, `View`, `Index`, `String` and `Pinned` handles, and `Owned` |
 | `vector` | Growable slice: `Push`, `Pop`, `At`, `Ptr`, `Set`, `RemoveAt`, `DeleteFunc`, `Truncate`, `Reserve`, `Clip`, `All`, `Values`, `From`, and `Append` for bulk copies; `NewStable` never moves |
 | `hashmap` | Swiss table: `Map` for comparable keys with an optional `Hasher` such as `Int`, `Strings` for text keys looked up without allocating; `Contains`, `Keys`, `Values`, `Clear`, `Clip`, a capacity hint, `Map.GetOrSet` and `Map.Upsert` that hash once, and `Map.GetMany` for batched lookups that overlap their cache misses |
 | `btree` | Ordered map with `Min`, `Max`, `All`, `Keys`, `Values`, `From`, `Range` and `Backward` |

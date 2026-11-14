@@ -187,6 +187,9 @@ type Shared struct {
 	shards atomic.Pointer[[]*shard]
 	owner  uint32
 	prof   sites
+
+	closing sync.RWMutex
+	epoch   uint64
 }
 
 func (s *Shared) shardAt(i uint32) *shard { return (*s.shards.Load())[i] }
@@ -305,6 +308,21 @@ func (s *Shared) Footprint() Footprint {
 	return foot
 }
 
+func (s *Shared) currentEpoch() uint64 {
+	s.closing.RLock()
+	defer s.closing.RUnlock()
+	return s.epoch
+}
+
+func (s *Shared) releaseIn(epoch uint64, h Ownable) error {
+	s.closing.RLock()
+	defer s.closing.RUnlock()
+	if s.epoch != epoch {
+		return nil
+	}
+	return h.release(s)
+}
+
 // UseHugePages behaves like Local.UseHugePages.
 func (s *Shared) UseHugePages() { s.d.useHugePages() }
 
@@ -322,6 +340,9 @@ func (s *Shared) Trim() error {
 // Close unmaps every page of s, invalidating everything allocated from it, and
 // leaves s ready for reuse.
 func (s *Shared) Close() error {
+	s.closing.Lock()
+	defer s.closing.Unlock()
+	s.epoch++
 	shards := s.lockAll()
 	defer s.unlockAll(shards)
 	s.prof.clear()

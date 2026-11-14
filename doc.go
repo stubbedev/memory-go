@@ -6,7 +6,10 @@
 // pointers, slices, strings, maps, channels, functions or interfaces. Every
 // allocation checks this and returns ErrHoldsPointers otherwise. The handle
 // types of this package, Ptr, Ref, Slice, View, Index and String, refer only to memory
-// the garbage collector does not manage and may be stored off-heap.
+// the garbage collector does not manage and may be stored off-heap. So may
+// Pinned, a Go pointer to an object a Pins keeps pinned on the Go heap, as cgo
+// allows C memory to hold pointers to pinned Go objects. Owned frees a handle
+// from a Shared once a small owner on the Go heap becomes unreachable.
 //
 // Local serves a single goroutine, Shared several without contending, and Arena
 // frees whole groups of allocations at once. Region grows in place without moving.
