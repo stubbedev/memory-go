@@ -12,7 +12,10 @@
 // from a Shared once a small owner on the Go heap becomes unreachable.
 //
 // Local serves a single goroutine, Shared several without contending, and Arena
-// frees whole groups of allocations at once. Region grows in place without moving.
+// frees whole groups of allocations at once. Region grows in place without moving,
+// and OpenRegion backs one with a file so that it persists and can be shared
+// between processes. Region.Freeze and FreezeSlice make memory read-only, so that
+// a stray write faults.
 //
 // Misuse panics instead of corrupting memory. Every allocation is tracked in a
 // side table or trailer recording its allocator, its size and whether it is live, so a

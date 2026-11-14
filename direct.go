@@ -43,6 +43,14 @@ type mapping struct {
 
 type liveMapping struct {
 	reserved, size int
+	frozen         bool
+}
+
+func (m liveMapping) resizable(p unsafe.Pointer) error {
+	if m.frozen {
+		return fmt.Errorf("resize %#x: %w", uintptr(p), ErrFrozen)
+	}
+	return nil
 }
 
 type direct struct {
@@ -90,10 +98,10 @@ func (d *direct) verify(p unsafe.Pointer, size int) liveMapping {
 	return m
 }
 
-func (d *direct) check(p unsafe.Pointer, size int) {
+func (d *direct) check(p unsafe.Pointer, size int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.verify(p, size)
+	return d.verify(p, size).resizable(p)
 }
 
 func (d *direct) release(p unsafe.Pointer, size int) error {
@@ -104,6 +112,11 @@ func (d *direct) release(p unsafe.Pointer, size int) error {
 
 func (d *direct) releaseLocked(p unsafe.Pointer, size int) error {
 	m := d.verify(p, size)
+	if m.frozen {
+		if err := osProtect(p, m.reserved, true); err != nil {
+			return fmt.Errorf("thaw %d bytes at %#x: %w", m.reserved, uintptr(p), err)
+		}
+	}
 	eraseTrailer(p, size)
 	d.stats.Live--
 	d.stats.Bytes -= m.reserved - trailerSize
@@ -122,6 +135,9 @@ func (d *direct) resize(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, er
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	m := d.verify(p, oldSize)
+	if err := m.resizable(p); err != nil {
+		return nil, err
+	}
 	if rounded == m.reserved {
 		d.resizeInPlace(p, m, oldSize, size)
 		return p, nil

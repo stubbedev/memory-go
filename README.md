@@ -226,6 +226,50 @@ An `Index[T]` names an element in four bytes and stays meaningful wherever the
 region is mapped. `vector.NewStable` gives a vector the same property. Regions are
 checked for bounds only.
 
+#### Files
+
+`OpenRegion[T](path, maxLen)` and `NewRegionFile[T](f, maxLen)` back a region
+with a file mapped shared, so a structure linked by `Index` persists across runs
+and can be shared between processes. The file starts with a 64-byte header
+recording the element size, alignment, a fingerprint of the field layout, the
+byte order and the length; reopening with a different `T` returns
+`ErrRegionMismatch` naming the difference, and a file that is not a region
+`ErrNotRegionFile`. Address space for `maxLen` elements is reserved up front, so
+elements never move; the file grows in 1 MiB steps on `Grow` and shrinks on
+`Truncate`. On Windows the file is extended to the full reservation while mapped
+(sparse where the file system allows) and cut back on `Close`. `Sync` flushes
+the elements and length to stable storage (`msync` and `fsync`, or
+`FlushViewOfFile` and `FlushFileBuffers`). On Linux, `NewSharedRegion` backs a
+region with a memfd; hand `r.File()` to a child in `exec.Cmd.ExtraFiles` and open
+it there with `NewRegionFile`.
+
+What is guaranteed:
+
+- Writes reach the file's page cache at once: other processes mapping it see
+  them, and they survive a crash or kill of the writing process without `Sync`.
+- The length is raised only after the file has grown and lowered only after the
+  dropped elements were cleared, so after a process crash the file always opens,
+  and elements past the length read as zero. An interrupted `Truncate` can leave
+  dropped elements zeroed but still counted.
+- After an operating system crash or power loss, only what the last completed
+  `Sync` covered is guaranteed. Pages written since may be lost in any
+  combination, including the length disagreeing with the elements. No write is
+  atomic beyond what the hardware gives an aligned word. On macOS, `fsync` does
+  not flush the drive's cache.
+- Files are tied to the byte order and the layout of `T`, not to an address.
+- One process at a time may `Grow` or `Truncate`; others see the length the file
+  had when they opened it.
+
+#### Protection
+
+`Region.Freeze` makes a region read-only with `mprotect` or `VirtualProtect`, so
+a stray write faults instead of corrupting it; `Grow`, `Truncate` and `Populate`
+return `ErrFrozen` until `Thaw`. `FreezeSlice` and `ThawSlice` do the same for a
+`Slice` over 8 KiB, which owns whole pages; smaller ones return
+`ErrSharesPages`. Resizing a frozen `Slice` returns `ErrFrozen`, and freeing it
+thaws it first, so the allocator never writes to a frozen page. `Populate` must
+not be called on a frozen `Slice`.
+
 ### Prefaulting
 
 `Populate` and `Region.Populate` make memory resident in one batch, so a
@@ -306,7 +350,7 @@ parent's add up to the true total, so pass both to `SyncMemoryLimit`.
 
 | Package | What it is |
 | --- | --- |
-| `memory` | Allocators, `Region`, the `Ptr`, `Ref`, `Slice`, `View`, `Index`, `String` and `Pinned` handles, and `Owned` |
+| `memory` | Allocators, `Region` (anonymous or file-backed), the `Ptr`, `Ref`, `Slice`, `View`, `Index`, `String` and `Pinned` handles, and `Owned` |
 | `vector` | Growable slice: `Push`, `Pop`, `At`, `Ptr`, `Set`, `RemoveAt`, `DeleteFunc`, `Truncate`, `Reserve`, `Clip`, `All`, `Values`, `From`, and `Append` for bulk copies; `NewStable` never moves |
 | `hashmap` | Swiss table: `Map` for comparable keys with an optional `Hasher` such as `Int`, `Strings` for text keys looked up without allocating; `Contains`, `Keys`, `Values`, `Clear`, `Clip`, a capacity hint, `Map.GetOrSet` and `Map.Upsert` that hash once, and `Map.GetMany` for batched lookups that overlap their cache misses |
 | `btree` | Ordered map with `Min`, `Max`, `All`, `Keys`, `Values`, `From`, `Range` and `Backward` |

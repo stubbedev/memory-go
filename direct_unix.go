@@ -37,6 +37,14 @@ func osUnmap(p unsafe.Pointer, size int) error { return unix.MunmapPtr(p, uintpt
 
 func osRecommit(unsafe.Pointer, int) error { return nil }
 
+func osProtect(p unsafe.Pointer, size int, writable bool) error {
+	prot := unix.PROT_READ
+	if writable {
+		prot |= unix.PROT_WRITE
+	}
+	return unix.Mprotect(unsafe.Slice((*byte)(p), size), prot)
+}
+
 func osShrink(p unsafe.Pointer, size, to int) (bool, error) {
 	if err := unix.MunmapPtr(unsafe.Add(p, to), uintptr(size-to)); err != nil {
 		return false, err

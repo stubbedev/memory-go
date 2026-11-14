@@ -38,8 +38,11 @@ func Populate[T any](s Slice[T]) error {
 }
 
 // Populate makes the current elements of r resident now, like the function
-// Populate.
+// Populate. A frozen r returns ErrFrozen.
 func (r *Region[T]) Populate() error {
+	if err := r.unfrozen("populate"); err != nil {
+		return err
+	}
 	if r.n == 0 {
 		return nil
 	}

@@ -55,6 +55,15 @@ func osRecommit(p unsafe.Pointer, size int) error {
 	return err
 }
 
+func osProtect(p unsafe.Pointer, size int, writable bool) error {
+	prot := uint32(windows.PAGE_READONLY)
+	if writable {
+		prot = windows.PAGE_READWRITE
+	}
+	var old uint32
+	return windows.VirtualProtect(uintptr(p), uintptr(size), prot, &old)
+}
+
 func osShrink(unsafe.Pointer, int, int) (bool, error) { return false, nil }
 
 func osGrow(unsafe.Pointer, int, int) (unsafe.Pointer, bool, error) { return nil, false, nil }

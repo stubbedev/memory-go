@@ -191,6 +191,9 @@ func (a *Arena) realloc(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, er
 func (a *Arena) reallocBig(p unsafe.Pointer, oldSize, size int) (unsafe.Pointer, error) {
 	i := a.bigIndex(p)
 	if size <= smallMax {
+		if err := checkResizable(a.parent, p, oldSize); err != nil {
+			return nil, err
+		}
 		return a.move(p, oldSize, size)
 	}
 	moved, err := a.parent.realloc(p, oldSize, size)

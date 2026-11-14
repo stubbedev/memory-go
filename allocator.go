@@ -73,7 +73,9 @@ func reallocate(h *heap, d *direct, p unsafe.Pointer, oldSize, size int) (unsafe
 		return d.resize(p, oldSize, size)
 	}
 	if oldSize > smallMax {
-		d.check(p, oldSize)
+		if err := d.check(p, oldSize); err != nil {
+			return nil, err
+		}
 	} else {
 		s := spanOf(p)
 		verifySlot(s, p, oldSize, h.owner)

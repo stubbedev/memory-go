@@ -26,30 +26,27 @@ func (i Index[T]) IsNil() bool { return i == 0 }
 // Region is one contiguous array of up to a fixed number of off-heap Ts that
 // grows in place: it reserves address space up front and only uses memory for
 // the elements it has, so pointers into it stay valid until Truncate drops
-// their element or Close. It is not safe for concurrent use, and its elements
-// are not protected by the misuse guards beyond bounds checks.
+// their element or Close. NewRegion backs it with anonymous memory; OpenRegion,
+// NewRegionFile and NewSharedRegion with a file that persists the elements and
+// can be shared between processes. It is not safe for concurrent use, and its
+// elements are not protected by the misuse guards beyond bounds checks.
 type Region[T any] struct {
 	base      *T
 	limit     int
 	n         int
 	reserved  int
 	committed int
+	frozen    bool
+	file      *regionFile
 }
 
 // NewRegion reserves address space for maxLen Ts without using memory for them.
 // maxLen may be far above what the machine could hold, and is at most
 // 2³²−2 so that every element has an Index.
 func NewRegion[T any](maxLen int) (*Region[T], error) {
-	size, err := byteSize[T](maxLen)
+	reserved, err := regionBytes[T](maxLen)
 	if err != nil {
 		return nil, err
-	}
-	if int64(maxLen) > maxRegionLen {
-		return nil, fmt.Errorf("memory: region of %d elements: %w", maxLen, ErrTooLarge)
-	}
-	reserved, err := pageRound(size)
-	if err != nil {
-		return nil, fmt.Errorf("memory: region of %d elements: %w", maxLen, err)
 	}
 	align := osPageSize
 	if reserved >= hugeSize {
@@ -62,11 +59,43 @@ func NewRegion[T any](maxLen int) (*Region[T], error) {
 	return &Region[T]{base: (*T)(base), limit: maxLen, reserved: reserved}, nil
 }
 
+func regionBytes[T any](maxLen int) (int, error) {
+	size, err := byteSize[T](maxLen)
+	if err != nil {
+		return 0, err
+	}
+	if int64(maxLen) > maxRegionLen {
+		return 0, fmt.Errorf("memory: region of %d elements: %w", maxLen, ErrTooLarge)
+	}
+	reserved, err := pageRound(size)
+	if err != nil {
+		return 0, fmt.Errorf("memory: region of %d elements: %w", maxLen, err)
+	}
+	return reserved, nil
+}
+
+func (r *Region[T]) lead() int {
+	if r.file == nil {
+		return 0
+	}
+	return regionHeaderSize
+}
+
+func (r *Region[T]) start() unsafe.Pointer { return unsafe.Add(unsafe.Pointer(r.base), -r.lead()) }
+
+func (r *Region[T]) setLen(n int) {
+	r.n = n
+	if r.file != nil {
+		r.header().length = uint64(n)
+	}
+}
+
 // UseHugePages asks the operating system to back r with huge pages. See
 // Local.UseHugePages for the trade-offs.
 func (r *Region[T]) UseHugePages() error {
-	if err := osAdviseHuge(unsafe.Pointer(r.base), r.reserved); err != nil {
-		return fmt.Errorf("memory: advise huge pages for %d bytes: %w", r.reserved, err)
+	start, size := pageSpan(r.start(), r.lead()+r.reserved)
+	if err := osAdviseHuge(start, size); err != nil {
+		return fmt.Errorf("memory: advise huge pages for %d bytes: %w", size, err)
 	}
 	return nil
 }
@@ -81,8 +110,11 @@ func (r *Region[T]) Cap() int { return r.limit }
 func (r *Region[T]) Elems() []T { return unsafe.Slice(r.base, r.n) }
 
 // Grow appends n zeroed elements and returns the Index of the first. It does
-// not move existing elements.
+// not move existing elements. A frozen r returns ErrFrozen.
 func (r *Region[T]) Grow(n int) (Index[T], error) {
+	if err := r.unfrozen("grow"); err != nil {
+		return 0, err
+	}
 	if n < 0 {
 		return 0, fmt.Errorf("memory: grow region by %d: %w", n, ErrNegativeLen)
 	}
@@ -93,7 +125,7 @@ func (r *Region[T]) Grow(n int) (Index[T], error) {
 		return 0, err
 	}
 	first := r.n
-	r.n += n
+	r.setLen(r.n + n)
 	return r.IndexAt(first), nil
 }
 
@@ -106,9 +138,15 @@ func (r *Region[T]) commit(bytes int) error {
 		return fmt.Errorf("memory: commit %d bytes: %w", bytes, err)
 	}
 	target := min(r.reserved, max(need, r.committed+commitStep))
-	at := unsafe.Add(unsafe.Pointer(r.base), r.committed)
-	if err := osRecommit(at, target-r.committed); err != nil {
-		return fmt.Errorf("memory: commit %d bytes at %#x: %w", target-r.committed, uintptr(at), err)
+	if r.file != nil {
+		if err := growRegionFile(r.file.f, int64(regionHeaderSize+target)); err != nil {
+			return fmt.Errorf("memory: grow region file to %d bytes: %w", regionHeaderSize+target, err)
+		}
+	} else {
+		at := unsafe.Add(unsafe.Pointer(r.base), r.committed)
+		if err := osRecommit(at, target-r.committed); err != nil {
+			return fmt.Errorf("memory: commit %d bytes at %#x: %w", target-r.committed, uintptr(at), err)
+		}
 	}
 	r.committed = target
 	return nil
@@ -120,7 +158,7 @@ func (r *Region[T]) IndexAt(i int) Index[T] {
 	if i < 0 || i > r.n {
 		panic(fmt.Sprintf("memory: region index out of range [%d] with length %d", i, r.n))
 	}
-	return Index[T](i + 1) //nolint:gosec // limit bounds i below MaxUint32
+	return Index[T](i + 1)
 }
 
 // Ptr returns a pointer to the element i refers to. It panics if i is nil or
@@ -135,15 +173,22 @@ func (r *Region[T]) Ptr(i Index[T]) *T {
 
 // Truncate shortens r to n elements. Dropped elements read as zero if r grows
 // again, and memory beyond a small slack goes back to the operating system. It
-// panics if n is out of range.
+// panics if n is out of range, and returns ErrFrozen if r is frozen.
 func (r *Region[T]) Truncate(n int) error {
 	if n < 0 || n > r.n {
 		panic(fmt.Sprintf("memory: truncate region of %d to %d", r.n, n))
 	}
+	if err := r.unfrozen("truncate"); err != nil {
+		return err
+	}
 	var zero T
 	size := int(unsafe.Sizeof(zero))
-	from, to := n*size, r.n*size
-	r.n = n
+	err := r.drop(n*size, r.n*size)
+	r.setLen(n)
+	return err
+}
+
+func (r *Region[T]) drop(from, to int) error {
 	if to == from {
 		return nil
 	}
@@ -156,9 +201,15 @@ func (r *Region[T]) Truncate(n int) error {
 		return nil
 	}
 	clearFrom(unsafe.Pointer(r.base), from, boundary)
-	at := unsafe.Add(unsafe.Pointer(r.base), boundary)
-	if err := osDecommit(at, r.committed-boundary); err != nil {
-		return fmt.Errorf("memory: decommit %d bytes at %#x: %w", r.committed-boundary, uintptr(at), err)
+	if r.file != nil {
+		if err := shrinkRegionFile(r.file.f, unsafe.Pointer(r.base), boundary, to); err != nil {
+			return fmt.Errorf("memory: shrink region file to %d bytes: %w", regionHeaderSize+boundary, err)
+		}
+	} else {
+		at := unsafe.Add(unsafe.Pointer(r.base), boundary)
+		if err := osDecommit(at, r.committed-boundary); err != nil {
+			return fmt.Errorf("memory: decommit %d bytes at %#x: %w", r.committed-boundary, uintptr(at), err)
+		}
 	}
 	r.committed = boundary
 	return nil
@@ -169,16 +220,19 @@ func (r *Region[T]) Footprint() Footprint {
 	return Footprint{Mapped: r.reserved, Committed: r.committed}
 }
 
-// Close releases r, invalidating every pointer into it. Closing twice does
-// nothing.
+// Close releases r, invalidating every pointer into it. A Region backed by a
+// file is unmapped and its file closed; the file stays consistent, but only
+// Sync makes it durable. Closing twice does nothing.
 func (r *Region[T]) Close() error {
 	if r.base == nil {
 		return nil
 	}
-	err := unmap(unsafe.Pointer(r.base), r.reserved)
-	*r = Region[T]{}
-	if err != nil {
-		return fmt.Errorf("memory: close region: %w", err)
+	var err error
+	if r.file != nil {
+		err = r.closeFile()
+	} else if uerr := unmap(unsafe.Pointer(r.base), r.reserved); uerr != nil {
+		err = fmt.Errorf("memory: close region: %w", uerr)
 	}
-	return nil
+	*r = Region[T]{}
+	return err
 }
