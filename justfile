@@ -62,3 +62,7 @@ bench:
 # Format every Go source in place with gofmt.
 fmt:
     gofmt -w .
+
+# Recompute the vendorHash in nix/package.nix from go.mod and go.sum.
+vendor-hash:
+    nix run github:stubbedev/lys-ci/f5bf1ded8f2fbff93f695f91d9884dfccea0a62e#vendor-hash -- nix/package.nix .#default.goModules
